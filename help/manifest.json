@@ -1,0 +1,23 @@
+{
+  "name": "Mobius Help",
+  "short_name": "Help",
+  "description": "Mobius AI Assistant Help & Documentation",
+  "start_url": "/help",
+  "display": "standalone",
+  "background_color": "#e2dccd",
+  "theme_color": "#4a3728",
+  "icons": [
+    {
+      "src": "/favicon.ico",
+      "sizes": "192x192",
+      "type": "image/x-icon",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/mobius-logo.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
