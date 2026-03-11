@@ -17,6 +17,10 @@ async function provision() {
       session_token text,
       created_at timestamptz default now()
     )`,
+    `create table if not exists modules (
+      name text primary key,
+      created_at timestamptz default now()
+    )`,
     `create table if not exists objectives (
       id uuid primary key default gen_random_uuid(),
       module text not null,

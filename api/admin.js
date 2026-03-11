@@ -63,14 +63,23 @@ module.exports = async function handler(req, res) {
 
       // ── MODULES ────────────────────────────────────────────────────────
       case 'modules': {
-        // Return list of distinct module names across all tables
+        if (req.method === 'POST') {
+          // Create a new module
+          const { name } = req.body;
+          if (!name) return json(res, 400, { error: 'name required' });
+          const { error } = await supabase
+            .from('modules')
+            .upsert([{ name }], { onConflict: 'name' });
+          if (error) throw error;
+          return json(res, 201, { name });
+        }
+        // GET — return all modules
         const { data, error } = await supabase
-          .from('objectives')
-          .select('module')
-          .order('module');
+          .from('modules')
+          .select('name')
+          .order('name');
         if (error) throw error;
-        const modules = [...new Set((data || []).map(r => r.module))];
-        return json(res, 200, modules);
+        return json(res, 200, (data || []).map(r => r.name));
       }
 
       // ── STATS ──────────────────────────────────────────────────────────

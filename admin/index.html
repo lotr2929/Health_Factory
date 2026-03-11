@@ -777,12 +777,16 @@
     const name = $('module-new-input').value.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '');
     if (!name) return;
     $('module-new-input').value = '';
-    // Optimistically add chip
-    state.activeModule = name;
-    localStorage.setItem('fh_module', name);
-    await loadModules();
-    selectModule(name);
-    toast('Module \'' + name + '\' ready', 'success');
+    try {
+      await fetch('/api/admin/modules', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name })
+      });
+      await loadModules();
+      selectModule(name);
+      toast('Module \'' + name + '\' created', 'success');
+    } catch { toast('Failed to create module', 'error'); }
   });
   $('module-new-input').addEventListener('keydown', e => {
     if (e.key === 'Enter') $('btn-add-module').click();
