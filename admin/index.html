@@ -611,6 +611,7 @@
         <span>Pending: <b id="stat-pending">—</b></span>
         <span>Knowledge: <b id="stat-knowledge">—</b></span>
       </div>
+      <button class="btn-xs outline" id="crawl-btn-top" style="display:none" title="Run one crawl cycle">↺ Run Crawl</button>
       <div id="user-info">
         <img id="user-avatar" src="" alt="" style="display:none" />
         <span id="user-name"></span>
@@ -760,6 +761,7 @@
     state.activeModule = mod;
     localStorage.setItem('fh_module', mod);
     $('module-status').textContent = mod.toUpperCase();
+    $('crawl-btn-top').style.display = '';
     document.querySelectorAll('.module-chip').forEach(c =>
       c.classList.toggle('active', c.dataset.mod === mod)
     );
@@ -1022,12 +1024,15 @@
 
   // ── CRAWL ──
   $('crawl-btn').addEventListener('click', runCrawl);
+  $('crawl-btn-top').addEventListener('click', runCrawl);
 
   async function runCrawl() {
     if (!state.activeModule || state.crawlRunning) return;
     state.crawlRunning = true;
     $('crawl-btn').disabled = true;
     $('crawl-btn').textContent = '↺ Running…';
+    $('crawl-btn-top').disabled = true;
+    $('crawl-btn-top').textContent = '↺ Running…';
     try {
       const r = await fetch('/api/crawl', {
         method: 'POST',
@@ -1046,6 +1051,8 @@
     state.crawlRunning = false;
     $('crawl-btn').disabled = false;
     $('crawl-btn').textContent = '↺ Run Crawl';
+    $('crawl-btn-top').disabled = false;
+    $('crawl-btn-top').textContent = '↺ Run Crawl';
   }
 
   // ── FINDINGS ──
