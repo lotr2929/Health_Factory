@@ -85,12 +85,13 @@ module.exports = async function handler(req, res) {
       // ── STATS ──────────────────────────────────────────────────────────
       case 'stats': {
         if (!module) return json(res, 400, { error: 'module required' });
-        const [{ count: objectives }, { count: pending }, { count: knowledge }] = await Promise.all([
+        const [{ count: objectives }, { count: pending }, { count: knowledge }, { count: queries }] = await Promise.all([
           supabase.from('objectives').select('*', { count: 'exact', head: true }).eq('module', module),
           supabase.from('findings').select('*', { count: 'exact', head: true }).eq('module', module).eq('status', 'pending'),
-          supabase.from('knowledge').select('*', { count: 'exact', head: true }).eq('module', module)
+          supabase.from('knowledge').select('*', { count: 'exact', head: true }).eq('module', module),
+          supabase.from('queries').select('*', { count: 'exact', head: true }).eq('module', module)
         ]);
-        return json(res, 200, { objectives, pending, knowledge, module });
+        return json(res, 200, { objectives, pending, knowledge, queries, module });
       }
 
       // ── OBJECTIVES ─────────────────────────────────────────────────────
@@ -247,6 +248,115 @@ module.exports = async function handler(req, res) {
           .single();
         if (error) throw error;
         return json(res, 201, data);
+      }
+
+      // ── QUERIES ────────────────────────────────────────────────────────
+      case 'queries': {
+        if (!module) return json(res, 400, { error: 'module required' });
+
+        if (req.method === 'GET') {
+          const { data, error } = await supabase
+            .from('queries')
+            .select('*')
+            .eq('module', module)
+            .order('created_at', { ascending: false });
+          if (error) throw error;
+          return json(res, 200, data || []);
+        }
+
+        if (req.method === 'POST') {
+          const { query, target_sources, objective_id } = req.body;
+          if (!query) return json(res, 400, { error: 'query required' });
+          const { data, error } = await supabase
+            .from('queries')
+            .insert([{
+              module,
+              query,
+              target_sources: target_sources || 10,
+              objective_id:   objective_id   || null,
+              status:         'pending',
+              findings_count: 0
+            }])
+            .select()
+            .single();
+          if (error) throw error;
+          return json(res, 201, data);
+        }
+
+        if (req.method === 'PATCH') {
+          const { id, status, query, target_sources } = req.body;
+          if (!id) return json(res, 400, { error: 'id required' });
+          const updates = {};
+          if (status)         updates.status         = status;
+          if (query)          updates.query          = query;
+          if (target_sources) updates.target_sources = target_sources;
+          await supabase.from('queries').update(updates).eq('id', id);
+          return json(res, 200, { ok: true });
+        }
+
+        return json(res, 405, { error: 'Method not allowed' });
+      }
+
+      // ── QUERY CHAT ─────────────────────────────────────────────────────
+      case 'query-chat': {
+        if (req.method !== 'POST') return json(res, 405, { error: 'POST only' });
+        const { messages, objectiveId, summaryRequest } = req.body;
+        if (!module) return json(res, 400, { error: 'module required' });
+
+        // Load brief for context
+        let brief = '', sessionNotes = '';
+        if (objectiveId) {
+          const { data: obj } = await supabase
+            .from('objectives').select('brief, session_notes').eq('id', objectiveId).single();
+          brief        = obj?.brief        || '';
+          sessionNotes = obj?.session_notes || '';
+        } else {
+          const { data: objs } = await supabase
+            .from('objectives').select('brief, session_notes')
+            .eq('module', module).eq('active', true)
+            .order('created_at', { ascending: false }).limit(1);
+          brief        = objs?.[0]?.brief        || '';
+          sessionNotes = objs?.[0]?.session_notes || '';
+        }
+
+        // Load existing queries for context
+        const { data: existingQueries } = await supabase
+          .from('queries').select('query, status, findings_count, target_sources')
+          .eq('module', module).order('created_at', { ascending: false }).limit(10);
+
+        const queryHistory = (existingQueries || []).map(q =>
+          '- "' + q.query + '" (' + q.status + ', ' + q.findings_count + '/' + q.target_sources + ' sources)'
+        ).join('\n');
+
+        const systemPrompt = [
+          'You are Gemini, the research partner for Mobius Factory — ' + module.toUpperCase() + ' module.',
+          '',
+          'Module mission: ' + brief,
+          sessionNotes ? 'Research context: ' + sessionNotes : '',
+          queryHistory ? '\nExisting research queries:\n' + queryHistory : '',
+          '',
+          summaryRequest
+            ? 'The admin wants to finalise a research query. Based on the conversation, propose:\n\n' +
+              'RESEARCH QUERY\n' +
+              'A single specific question that Gemini will research autonomously (1-2 sentences).\n\n' +
+              'TARGET SOURCES\n' +
+              'How many good sources are needed to adequately answer this query (suggest a number, e.g. 8, 10, 15).\n\n' +
+              'RATIONALE\n' +
+              'Brief explanation of why this query and target are appropriate.\n\n' +
+              'Format your response exactly as above so it can be reviewed and approved.'
+            : 'Converse naturally to help the admin identify the next research query for this module.\n' +
+              'Discuss what angle to explore next, what gaps exist, what would be most valuable.\n' +
+              'Do NOT produce structured query proposals unless the admin clicks the Propose Query button.'
+        ].filter(Boolean).join('\n');
+
+        const fullMessages = [
+          { role: 'user',      content: systemPrompt },
+          { role: 'assistant', content: 'Understood. Ready to discuss the next research query.' },
+          ...(messages || [])
+        ];
+
+        const result = await askGemini(fullMessages);
+        return json(res, 200, { reply: result.text });
       }
 
       // ── FINDINGS ───────────────────────────────────────────────────────

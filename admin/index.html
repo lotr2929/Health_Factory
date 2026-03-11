@@ -611,7 +611,8 @@
         <span>Pending: <b id="stat-pending">—</b></span>
         <span>Knowledge: <b id="stat-knowledge">—</b></span>
       </div>
-      <button class="btn-xs outline" id="crawl-btn-top" style="display:none" title="Run one crawl cycle">↺ Run Crawl</button>
+      <input id="crawl-count" type="number" min="1" max="100" value="1" style="display:none;width:46px;padding:3px 5px;font-family:var(--font);font-size:11px;background:var(--surface);border:1px solid var(--border);color:var(--text);border-radius:var(--radius);text-align:center;" title="Number of sources to crawl" />
+      <button class="btn-xs outline" id="crawl-btn-top" style="display:none" title="Run crawl">↺ Crawl</button>
       <div id="user-info">
         <img id="user-avatar" src="" alt="" style="display:none" />
         <span id="user-name"></span>
@@ -635,7 +636,11 @@
     <div id="left-panel">
       <div id="left-panel-header">
         <h3 id="left-panel-title">Briefs</h3>
-        <button class="btn-xs outline" id="btn-new-brief">+ New Brief</button>
+        <div style="display:flex;gap:5px">
+          <button class="btn-xs outline" id="btn-mode-brief" title="Brief session">Brief</button>
+          <button class="btn-xs outline" id="btn-mode-query" title="Query session">Query</button>
+          <button class="btn-xs outline" id="btn-new-brief">+ New</button>
+        </div>
       </div>
       <div id="brief-list">
         <div class="empty-state">
@@ -659,6 +664,8 @@
         <h3 id="right-panel-title">Conversation</h3>
         <div id="right-panel-actions">
           <button class="btn-xs outline" id="btn-save-brief" style="display:none">Save Brief</button>
+          <button class="btn-xs outline" id="btn-propose-query" style="display:none">Propose Query</button>
+          <button class="btn-xs outline" id="btn-approve-query" style="display:none">Approve &amp; Run</button>
           <button class="btn-xs outline" id="btn-show-findings" style="display:none">Show Findings</button>
           <button class="btn-xs outline" id="btn-show-chat" style="display:none">Show Chat</button>
         </div>
@@ -695,10 +702,13 @@
   const state = {
     user: null,
     activeModule: '',
-    mode: 'brief',           // 'brief' | 'review'
+    mode: 'brief',           // 'brief' | 'query' | 'review'
     activeBriefId: null,
     briefs: [],
     messages: [],            // full conversation history sent to Gemini
+    queryMessages: [],       // query session conversation
+    queries: [],
+    activeQueryId: null,
     findings: [],
     knowledge: [],
     crawlRunning: false
@@ -762,6 +772,7 @@
     localStorage.setItem('fh_module', mod);
     $('module-status').textContent = mod.toUpperCase();
     $('crawl-btn-top').style.display = '';
+    $('crawl-count').style.display = '';
     document.querySelectorAll('.module-chip').forEach(c =>
       c.classList.toggle('active', c.dataset.mod === mod)
     );
@@ -899,49 +910,6 @@
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
   });
 
-  async function sendMessage() {
-    const text = $('main-input').value.trim();
-    if (!text || !state.activeModule) return;
-    $('main-input').value = '';
-
-    appendMsg('user', text);
-    state.messages.push({ role: 'user', content: text });
-
-    const thinking = appendThinking();
-    $('btn-send').disabled = true;
-
-    try {
-      // If no active brief yet, create one implicitly
-      if (!state.activeBriefId && state.mode === 'brief') {
-        await createBriefFromConversation(text);
-      }
-
-      const r = await fetch('/api/admin/brief-chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          objectiveId: state.activeBriefId,
-          module: state.activeModule,
-          messages: state.messages
-        })
-      });
-      const d = await r.json();
-      thinking.remove();
-
-      const reply = d.reply || 'No response';
-      state.messages.push({ role: 'assistant', content: reply });
-      appendMsg('assistant', reply, d.proposedSources);
-
-      // Show Save Brief once conversation is going
-      if (state.mode === 'brief') updateSaveBriefBtn();
-
-    } catch (e) {
-      thinking.remove();
-      appendMsg('assistant', 'Error: ' + e.message);
-    }
-    $('btn-send').disabled = false;
-  }
-
   async function createBriefFromConversation(text) {
     try {
       const r = await fetch('/api/admin/objectives', {
@@ -1028,31 +996,34 @@
 
   async function runCrawl() {
     if (!state.activeModule || state.crawlRunning) return;
+    const n = Math.max(1, Math.min(100, parseInt($('crawl-count').value) || 1));
     state.crawlRunning = true;
-    $('crawl-btn').disabled = true;
-    $('crawl-btn').textContent = '↺ Running…';
     $('crawl-btn-top').disabled = true;
-    $('crawl-btn-top').textContent = '↺ Running…';
-    try {
-      const r = await fetch('/api/crawl', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ module: state.activeModule })
-      });
-      const d = await r.json();
-      await loadStats();
-      await loadFindings();
-      if (d.processed) {
-        toast('Crawled: ' + (d.source || 'source') + ' — ' + (d.findings || 0) + ' findings added', 'success');
-      } else {
-        toast(d.message || 'No sources to crawl', '');
-      }
-    } catch (e) { toast('Crawl error: ' + e.message, 'error'); }
+    $('crawl-btn').disabled = true;
+    let completed = 0;
+    for (let i = 0; i < n; i++) {
+      const label = n === 1 ? '↺ Crawling…' : '↺ ' + (i + 1) + '/' + n;
+      $('crawl-btn-top').textContent = label;
+      $('crawl-btn').textContent = label;
+      try {
+        const r = await fetch('/api/crawl', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ module: state.activeModule })
+        });
+        const d = await r.json();
+        await loadStats();
+        if (!d.processed) break;
+        completed++;
+      } catch (e) { toast('Crawl error: ' + e.message, 'error'); break; }
+    }
     state.crawlRunning = false;
+    $('crawl-btn-top').disabled = false;
+    $('crawl-btn-top').textContent = '↺ Crawl';
     $('crawl-btn').disabled = false;
     $('crawl-btn').textContent = '↺ Run Crawl';
-    $('crawl-btn-top').disabled = false;
-    $('crawl-btn-top').textContent = '↺ Run Crawl';
+    toast(completed + ' source' + (completed !== 1 ? 's' : '') + ' crawled', completed ? 'success' : '');
+    await loadFindings();
   }
 
   // ── FINDINGS ──
@@ -1213,6 +1184,319 @@
   function fmtDate(iso) {
     if (!iso) return '';
     return new Date(iso).toLocaleDateString('en-AU', { day:'numeric', month:'short', year:'numeric' });
+  }
+
+  // ── MODE BUTTONS ──
+  $('btn-mode-brief').addEventListener('click', () => {
+    setMode('brief');
+    loadBriefs();
+  });
+  $('btn-mode-query').addEventListener('click', () => {
+    setMode('query');
+    loadQueries();
+  });
+
+  // ── EXTENDED setMode for query ──
+  const _setMode = setMode;
+  // Override to handle query mode
+  window.setMode = setMode;
+  function setMode(mode) {
+    state.mode = mode;
+    $('mode-status').textContent = mode.toUpperCase();
+    // Hide all action buttons first
+    ['btn-save-brief','btn-propose-query','btn-approve-query',
+     'btn-show-findings','btn-show-chat','crawl-btn'].forEach(id => {
+      const el = $(id); if (el) el.style.display = 'none';
+    });
+    $('messages-panel').classList.remove('hidden');
+    $('findings-panel').classList.remove('active');
+
+    if (mode === 'brief') {
+      $('left-panel-title').textContent = 'Briefs';
+      $('right-panel-title').textContent = 'Conversation';
+      $('btn-new-brief').style.display = '';
+      $('btn-mode-brief').style.fontWeight = 'bold';
+      $('btn-mode-query').style.fontWeight = 'normal';
+      if (state.messages.length) $('btn-save-brief').style.display = '';
+      $('main-input').placeholder = 'Talk to Gemini freely about your research interest…';
+      renderBriefs();
+    } else if (mode === 'query') {
+      $('left-panel-title').textContent = 'Queries';
+      $('right-panel-title').textContent = 'Query Session';
+      $('btn-new-brief').style.display = '';
+      $('btn-new-brief').textContent = '+ New Query';
+      $('btn-mode-brief').style.fontWeight = 'normal';
+      $('btn-mode-query').style.fontWeight = 'bold';
+      $('btn-propose-query').style.display = '';
+      $('main-input').placeholder = 'Discuss with Gemini what to research next. When ready, click Propose Query.';
+      renderQueryList();
+    } else {
+      // review
+      $('left-panel-title').textContent = 'Queries';
+      $('right-panel-title').textContent = 'Findings';
+      $('btn-new-brief').style.display = 'none';
+      $('btn-mode-brief').style.fontWeight = 'normal';
+      $('btn-mode-query').style.fontWeight = 'normal';
+      $('crawl-btn').style.display = '';
+      $('crawl-btn').disabled = !state.activeModule;
+      $('btn-show-findings').style.display = 'none';
+      $('btn-show-chat').style.display = '';
+      loadFindings();
+    }
+  }
+
+  // Patch btn-new-brief to handle both modes
+  $('btn-new-brief').addEventListener('click', () => {
+    if (!state.activeModule) { toast('Select a module first', 'error'); return; }
+    if (state.mode === 'query') {
+      startNewQuerySession();
+    } else {
+      state.activeBriefId = null;
+      state.messages = [];
+      state.briefSummaryShown = false;
+      clearMessages();
+      renderBriefs();
+      appendMsg('assistant', 'Starting a new brief for the ' + state.activeModule.toUpperCase() + ' module.\n\nWhat is your research interest? Describe it freely.');
+      $('main-input').focus();
+    }
+  });
+
+  // ── QUERY SESSION ──
+  async function loadQueries() {
+    if (!state.activeModule) return;
+    try {
+      const r = await fetch('/api/admin/queries?module=' + enc(state.activeModule));
+      if (!r.ok) return;
+      state.queries = await r.json();
+      renderQueryList();
+    } catch {}
+  }
+
+  function renderQueryList() {
+    const list = $('brief-list');
+    if (!state.queries.length) {
+      list.innerHTML = '<div class="empty-state"><div class="empty-icon">○</div><p>No queries yet<br>Click + New Query to start</p></div>';
+      return;
+    }
+    list.innerHTML = state.queries.map(q => {
+      const statusColour = q.status === 'complete' ? 'active' : q.status === 'running' ? 'active' : 'closed';
+      const progress = q.findings_count + '/' + q.target_sources;
+      return `
+        <div class="brief-item ${state.activeQueryId === q.id ? 'active' : ''}" data-id="${q.id}">
+          <div class="brief-item-text">${esc(q.query)}</div>
+          <div class="brief-item-meta">
+            <span class="status-dot ${statusColour}"></span>
+            ${esc(q.status)} &middot; ${progress} sources &middot; ${fmtDate(q.created_at)}
+          </div>
+        </div>`;
+    }).join('');
+    list.querySelectorAll('.brief-item').forEach(el =>
+      el.addEventListener('click', () => selectQuery(el.dataset.id))
+    );
+  }
+
+  function selectQuery(id) {
+    state.activeQueryId = id;
+    state.queryMessages = [];
+    const q = state.queries.find(x => x.id === id);
+    renderQueryList();
+    clearMessages();
+    if (q) {
+      appendMsg('assistant', 'Query: "' + q.query + '"\n\nTarget: ' + q.target_sources + ' sources · Found: ' + q.findings_count + ' · Status: ' + q.status +
+        '\n\nYou can discuss this query, refine it, or switch to Review to see its findings.');
+    }
+  }
+
+  function startNewQuerySession() {
+    state.activeQueryId = null;
+    state.queryMessages = [];
+    clearMessages();
+    renderQueryList();
+    appendMsg('assistant', 'Let\'s define the next research query for the ' + state.activeModule.toUpperCase() + ' module.\n\nWhat would you like to investigate? Talk freely — we\'ll shape it into a specific research question together.');
+    $('btn-propose-query').style.display = '';
+    $('btn-approve-query').style.display = 'none';
+    $('main-input').focus();
+  }
+
+  // Propose Query button — ask Gemini for structured proposal
+  $('btn-propose-query').addEventListener('click', async () => {
+    if (!state.activeModule) return;
+    const thinking = appendThinking();
+    $('btn-propose-query').disabled = true;
+    try {
+      const r = await fetch('/api/admin/query-chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          module: state.activeModule,
+          objectiveId: state.activeBriefId,
+          messages: state.queryMessages,
+          summaryRequest: true
+        })
+      });
+      const d = await r.json();
+      thinking.remove();
+      const reply = d.reply || 'No response';
+      state.queryMessages.push({ role: 'assistant', content: reply });
+      appendMsg('assistant', reply);
+      // Parse query + target from response
+      state._pendingQueryProposal = reply;
+      $('btn-approve-query').style.display = '';
+      $('btn-propose-query').textContent = 'Re-propose';
+    } catch (e) { thinking.remove(); toast('Error: ' + e.message, 'error'); }
+    $('btn-propose-query').disabled = false;
+  });
+
+  // Approve & Run button — extract query, save, start crawl
+  $('btn-approve-query').addEventListener('click', async () => {
+    if (!state._pendingQueryProposal) return;
+    const proposal = state._pendingQueryProposal;
+
+    // Extract query text and target from Gemini's structured response
+    const queryMatch  = proposal.match(/RESEARCH QUERY\s*\n([\s\S]*?)(?=\n\nTARGET|$)/i);
+    const targetMatch = proposal.match(/TARGET SOURCES\s*\n.*?(\d+)/i);
+
+    const queryText   = queryMatch  ? queryMatch[1].trim()  : proposal.slice(0, 200);
+    const targetCount = targetMatch ? parseInt(targetMatch[1]) : 10;
+
+    $('btn-approve-query').disabled = true;
+    try {
+      // Save query to DB
+      const r = await fetch('/api/admin/queries', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          module:         state.activeModule,
+          query:          queryText,
+          target_sources: targetCount,
+          objective_id:   state.activeBriefId || null
+        })
+      });
+      const q = await r.json();
+      state.activeQueryId = q.id;
+      state.queries.unshift(q);
+      renderQueryList();
+      appendMsg('assistant', 'Query saved: "' + queryText + '"\nTarget: ' + targetCount + ' sources.\n\nGemini will now research this autonomously. Click ↺ Crawl to run a cycle now, or it will run automatically on schedule.');
+      $('btn-approve-query').style.display = 'none';
+      $('btn-propose-query').textContent = 'Propose Query';
+      state._pendingQueryProposal = null;
+      toast('Query approved', 'success');
+      // Auto-trigger one crawl cycle
+      runCrawlForQuery(q.id);
+    } catch (e) { toast('Failed to save query: ' + e.message, 'error'); }
+    $('btn-approve-query').disabled = false;
+  });
+
+  // Override sendMessage to route to query-chat when in query mode
+  const _sendMessage = sendMessage;
+  async function sendMessage() {
+    const text = $('main-input').value.trim();
+    if (!text || !state.activeModule) return;
+    $('main-input').value = '';
+
+    if (state.mode === 'query') {
+      appendMsg('user', text);
+      state.queryMessages.push({ role: 'user', content: text });
+      const thinking = appendThinking();
+      $('btn-send').disabled = true;
+      try {
+        const r = await fetch('/api/admin/query-chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            module:      state.activeModule,
+            objectiveId: state.activeBriefId,
+            messages:    state.queryMessages
+          })
+        });
+        const d = await r.json();
+        thinking.remove();
+        const reply = d.reply || 'No response';
+        state.queryMessages.push({ role: 'assistant', content: reply });
+        appendMsg('assistant', reply);
+      } catch (e) { thinking.remove(); appendMsg('assistant', 'Error: ' + e.message); }
+      $('btn-send').disabled = false;
+      return;
+    }
+
+    // Brief mode — original flow
+    appendMsg('user', text);
+    state.messages.push({ role: 'user', content: text });
+    const thinking = appendThinking();
+    $('btn-send').disabled = true;
+    try {
+      if (!state.activeBriefId && state.mode === 'brief') {
+        await createBriefFromConversation(text);
+      }
+      const r = await fetch('/api/admin/brief-chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ objectiveId: state.activeBriefId, module: state.activeModule, messages: state.messages })
+      });
+      const d = await r.json();
+      thinking.remove();
+      const reply = d.reply || 'No response';
+      state.messages.push({ role: 'assistant', content: reply });
+      appendMsg('assistant', reply, d.proposedSources);
+      if (state.mode === 'brief') updateSaveBriefBtn();
+    } catch (e) { thinking.remove(); appendMsg('assistant', 'Error: ' + e.message); }
+    $('btn-send').disabled = false;
+  }
+
+  async function runCrawlForQuery(queryId) {
+    if (!state.activeModule || state.crawlRunning) return;
+    state.crawlRunning = true;
+    $('crawl-btn-top').disabled = true;
+    $('crawl-btn-top').textContent = '↺ Researching…';
+    try {
+      const r = await fetch('/api/crawl', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ module: state.activeModule, queryId })
+      });
+      const d = await r.json();
+      await loadStats();
+      await loadQueries();
+      if (d.message) toast(d.message, d.complete ? 'success' : '');
+    } catch (e) { toast('Crawl error: ' + e.message, 'error'); }
+    state.crawlRunning = false;
+    $('crawl-btn-top').disabled = false;
+    $('crawl-btn-top').textContent = '↺ Crawl';
+  }
+
+  // Update runCrawl to pass active queryId
+  async function runCrawl() {
+    if (!state.activeModule || state.crawlRunning) return;
+    const n = Math.max(1, Math.min(100, parseInt($('crawl-count').value) || 1));
+    state.crawlRunning = true;
+    $('crawl-btn-top').disabled = true;
+    $('crawl-btn').disabled = true;
+    let completed = 0;
+    for (let i = 0; i < n; i++) {
+      const label = n === 1 ? '↺ Crawling…' : '↺ ' + (i + 1) + '/' + n;
+      $('crawl-btn-top').textContent = label;
+      $('crawl-btn').textContent = label;
+      try {
+        const r = await fetch('/api/crawl', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ module: state.activeModule, queryId: state.activeQueryId || undefined })
+        });
+        const d = await r.json();
+        await loadStats();
+        if (!d.processed) { toast(d.message || 'Done', ''); break; }
+        completed++;
+        if (d.complete) { toast(d.message, 'success'); break; }
+      } catch (e) { toast('Crawl error: ' + e.message, 'error'); break; }
+    }
+    state.crawlRunning = false;
+    $('crawl-btn-top').disabled = false;
+    $('crawl-btn-top').textContent = '↺ Crawl';
+    $('crawl-btn').disabled = false;
+    $('crawl-btn').textContent = '↺ Run Crawl';
+    if (completed > 0) toast(completed + ' cycle' + (completed !== 1 ? 's' : '') + ' completed', 'success');
+    await loadFindings();
+    await loadQueries();
   }
 
   // ── INIT ──

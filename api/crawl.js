@@ -1,17 +1,19 @@
-// api/crawl.js — Mobius Factory crawler + evaluator
+// api/crawl.js — Mobius Factory autonomous research engine
 //
-// POST /api/crawl { module }
-//   — picks the next approved source for the module (least recently crawled)
-//   — fetches its content
-//   — sends to Gemini for evaluation against the module's active brief
-//   — saves structured findings to the findings table
+// POST /api/crawl { module, queryId }
 //
-// Also used by the Vercel cron job (vercel.json crons entry).
+// Per run:
+//   1. Load the active query (agreed text + target source count)
+//   2. Load brief (mission + research objectives) for context
+//   3. Gemini generates Tavily search queries from the research query
+//   4. Search + evaluate loop — keeps going until target met or exhausted
+//   5. Save findings linked to the query
+//   6. Update query status (running → complete when target met)
 
 const { supabase } = require('./_supabase');
 const { askGemini } = require('./_ai');
 
-// ── Auth guard (same cookie check as admin.js) ────────────────────────────
+// ── Auth guard ─────────────────────────────────────────────────────────────
 async function getAuthedUser(req) {
   const cookie = req.headers.cookie || '';
   const match  = cookie.match(/fh_session=([^;]+)/);
@@ -25,89 +27,116 @@ async function getAuthedUser(req) {
   return data || null;
 }
 
-function json(res, status, body) {
-  res.status(status).json(body);
-}
+function json(res, status, body) { res.status(status).json(body); }
 
-// ── Fetch and extract text from a URL ─────────────────────────────────────
-async function fetchPageText(url) {
-  const r = await fetch(url, {
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (compatible; MobiusFactory/1.0; +https://mobius-factory.vercel.app)',
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
-    },
-    signal: AbortSignal.timeout(8000)
-  });
-
-  if (!r.ok) throw new Error('HTTP ' + r.status + ' fetching ' + url);
-
-  const contentType = r.headers.get('content-type') || '';
-  const html = await r.text();
-
-  // Strip HTML tags and collapse whitespace
-  const text = html
-    .replace(/<script[\s\S]*?<\/script>/gi, '')
-    .replace(/<style[\s\S]*?<\/style>/gi, '')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 6000); // Keep first 6000 chars — enough for Gemini to evaluate
-
-  if (!text || text.length < 100) throw new Error('Insufficient content extracted from ' + url);
-  return text;
-}
-
-// ── Evaluate content against brief using Gemini ───────────────────────────
-async function evaluateContent(text, url, module, brief, sessionNotes) {
+// ── Generate Tavily search queries from research query + brief ────────────
+async function generateSearchQueries(researchQuery, brief, sessionNotes, module) {
   const prompt = [
-    'You are evaluating a web page for the Mobius Factory ' + module.toUpperCase() + ' Knowledge Layer.',
+    'You are a research assistant for the Mobius Factory ' + module.toUpperCase() + ' Knowledge Layer.',
     '',
-    'Module brief: ' + brief,
+    'Module mission: ' + brief,
     sessionNotes ? 'Research context: ' + sessionNotes : '',
     '',
-    'Page URL: ' + url,
-    'Page content (first 6000 chars):',
-    text,
+    'The admin wants to research this specific question:',
+    '"' + researchQuery + '"',
     '',
-    'Your task: Extract 1–4 distinct knowledge findings from this page that are relevant to the module brief.',
-    'For each finding, respond ONLY with a JSON array in this exact format — no preamble, no markdown:',
-    '[',
-    '  {',
-    '    "topic_tags": ["tag1", "tag2"],',
-    '    "confidence": 0.85,',
-    '    "plain": "Plain language summary (1-2 sentences, for general users)",',
-    '    "technical": "Technical detail (1-2 sentences, for specialists)",',
-    '    "practical": "Practical implication or action (1 sentence)"',
-    '  }',
-    ']',
+    'Generate 4–6 specific web search queries to find authoritative, high-quality sources that answer this question.',
+    'Each query should target a different angle — different source types, different aspects of the question.',
     '',
-    'Rules:',
-    '- confidence: 0.0–1.0 (consider source authority, specificity, evidence quality)',
-    '- topic_tags: 2–5 lowercase tags, specific to the finding',
-    '- If the page has no relevant content, return an empty array: []',
-    '- Return ONLY the JSON array, nothing else'
+    'Target: peer-reviewed research, clinical guidelines, government health bodies, reputable institutions.',
+    'Avoid: news articles, opinion pieces, commercial sites unless uniquely authoritative.',
+    '',
+    'Respond ONLY with a JSON array of query strings:',
+    '["query 1", "query 2", "query 3", "query 4"]'
   ].filter(Boolean).join('\n');
 
   const result = await askGemini([{ role: 'user', content: prompt }]);
-  const raw = result.text.trim();
+  const raw = result.text.trim().replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim();
 
-  // Strip markdown code fences if present
-  const cleaned = raw.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim();
-
-  let findings;
   try {
-    findings = JSON.parse(cleaned);
-  } catch (e) {
-    throw new Error('Gemini returned invalid JSON: ' + raw.slice(0, 200));
+    const queries = JSON.parse(raw);
+    if (!Array.isArray(queries)) throw new Error('Not array');
+    return queries.slice(0, 6).filter(q => typeof q === 'string' && q.length > 0);
+  } catch {
+    const matches = raw.match(/"([^"]+)"/g);
+    if (matches) return matches.map(m => m.replace(/"/g, '')).slice(0, 6);
+    throw new Error('Could not parse queries: ' + raw.slice(0, 200));
   }
+}
 
-  if (!Array.isArray(findings)) throw new Error('Gemini response is not an array');
-  return findings;
+// ── Tavily search ─────────────────────────────────────────────────────────
+async function tavilySearch(query) {
+  const key = process.env.TAVILY_API_KEY;
+  if (!key) throw new Error('TAVILY_API_KEY not set');
+  const r = await fetch('https://api.tavily.com/search', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      api_key:             key,
+      query,
+      search_depth:        'advanced',
+      max_results:         10,
+      include_answer:      true,
+      include_raw_content: true
+    })
+  });
+  const data = await r.json();
+  if (data.error) throw new Error('Tavily: ' + (data.error.message || JSON.stringify(data.error)));
+  return data.results || [];
+}
+
+// ── Gemini evaluates a batch of results ──────────────────────────────────
+async function evaluateBatch(results, researchQuery, brief, sessionNotes, module, existingUrls) {
+  const fresh = results.filter(r => !existingUrls.has(r.url));
+  if (fresh.length === 0) return [];
+
+  const context = fresh.map((r, i) => [
+    '[' + (i + 1) + '] ' + r.title,
+    'URL: ' + r.url,
+    'Summary: ' + (r.content || '').slice(0, 500),
+    r.raw_content ? 'Detail: ' + r.raw_content.slice(0, 1500) : ''
+  ].filter(Boolean).join('\n')).join('\n\n---\n\n');
+
+  const prompt = [
+    'You are evaluating web search results for the Mobius Factory ' + module.toUpperCase() + ' Knowledge Layer.',
+    '',
+    'Module mission: ' + brief,
+    sessionNotes ? 'Research context: ' + sessionNotes : '',
+    '',
+    'Research question being answered: "' + researchQuery + '"',
+    '',
+    'Search results:',
+    context,
+    '',
+    'For each result that meaningfully answers the research question and is high quality, extract a finding.',
+    'Be selective — only include results that genuinely contribute to answering the question.',
+    'Skip: off-topic, low quality, purely commercial, duplicate information.',
+    '',
+    'Respond ONLY with a JSON array (empty array if nothing qualifies):',
+    '[{',
+    '  "url": "exact URL",',
+    '  "topic_tags": ["tag1", "tag2"],',
+    '  "confidence": 0.85,',
+    '  "plain": "2-3 sentence plain language summary",',
+    '  "technical": "2-3 sentence technical detail",',
+    '  "practical": "1-2 sentence practical implication"',
+    '}]',
+    '',
+    'confidence: 0–1 (source authority + relevance to question). Only include ≥ 0.6.',
+    'Return ONLY the JSON array.'
+  ].filter(Boolean).join('\n');
+
+  const result = await askGemini([{ role: 'user', content: prompt }]);
+  const raw = result.text.trim().replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim();
+
+  try {
+    const findings = JSON.parse(raw);
+    if (!Array.isArray(findings)) return [];
+    return findings.filter(f => f.url && (f.confidence || 0) >= 0.6);
+  } catch {
+    console.warn('[crawl] JSON parse failed:', raw.slice(0, 200));
+    return [];
+  }
 }
 
 // ── Main handler ───────────────────────────────────────────────────────────
@@ -118,36 +147,74 @@ module.exports = async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(204).end();
   if (req.method !== 'POST') return json(res, 405, { error: 'POST only' });
 
-  // Auth — allow both session cookie (manual) and cron secret (scheduled)
+  // Auth
   const cronSecret = req.headers['x-cron-secret'];
-  const isCron = cronSecret && cronSecret === process.env.CRON_SECRET;
+  const isCron     = cronSecret && cronSecret === process.env.CRON_SECRET;
   if (!isCron) {
     const user = await getAuthedUser(req);
     if (!user) return json(res, 401, { error: 'Not authenticated' });
   }
 
-  const module = (req.body?.module || '').toLowerCase().trim();
+  let module  = (req.body?.module  || '').toLowerCase().trim();
+  let queryId =  req.body?.queryId || null;
+
+  // Cron — pick least-recently-crawled module + its active query
+  if (isCron && !module) {
+    const { data: mods } = await supabase
+      .from('modules')
+      .select('name, last_cron_crawled_at')
+      .order('last_cron_crawled_at', { ascending: true, nullsFirst: true })
+      .limit(1);
+    if (!mods?.length) return json(res, 200, { processed: false, message: 'No modules' });
+    module = mods[0].name;
+    await supabase.from('modules')
+      .update({ last_cron_crawled_at: new Date().toISOString() })
+      .eq('name', module);
+  }
+
   if (!module) return json(res, 400, { error: 'module required' });
 
   try {
-    // ── 1. Get next approved source to crawl ────────────────────────────
-    // Pick the approved source that was least recently crawled (or never crawled)
-    const { data: sources, error: srcErr } = await supabase
-      .from('sources')
-      .select('id, url, source_name, objective_id, last_crawled_at')
-      .eq('module', module)
-      .eq('approved', true)
-      .order('last_crawled_at', { ascending: true, nullsFirst: true })
-      .limit(1);
-
-    if (srcErr) throw srcErr;
-    if (!sources || sources.length === 0) {
-      return json(res, 200, { processed: false, message: 'No approved sources to crawl. Add and approve sources in the Brief.' });
+    // ── 1. Load active query ───────────────────────────────────────────
+    let queryRow;
+    if (queryId) {
+      const { data } = await supabase
+        .from('queries')
+        .select('*')
+        .eq('id', queryId)
+        .single();
+      queryRow = data;
+    } else {
+      // Pick the most recent running or pending query for this module
+      const { data } = await supabase
+        .from('queries')
+        .select('*')
+        .eq('module', module)
+        .in('status', ['pending', 'running'])
+        .order('created_at', { ascending: false })
+        .limit(1);
+      queryRow = data?.[0];
     }
 
-    const source = sources[0];
+    if (!queryRow) {
+      return json(res, 200, {
+        processed: false,
+        message: 'No active query found for module "' + module + '". Discuss and agree on a query in the Brief session first.'
+      });
+    }
 
-    // ── 2. Get active brief + session notes for this module ─────────────
+    // Check if already met target
+    if (queryRow.findings_count >= queryRow.target_sources) {
+      return json(res, 200, {
+        processed: false,
+        message: 'Query target already met (' + queryRow.findings_count + '/' + queryRow.target_sources + '). Start a new query or review findings.'
+      });
+    }
+
+    // Mark as running
+    await supabase.from('queries').update({ status: 'running' }).eq('id', queryRow.id);
+
+    // ── 2. Load brief for context ──────────────────────────────────────
     const { data: objectives } = await supabase
       .from('objectives')
       .select('brief, session_notes')
@@ -156,70 +223,89 @@ module.exports = async function handler(req, res) {
       .order('created_at', { ascending: false })
       .limit(1);
 
-    const brief       = objectives?.[0]?.brief       || 'General ' + module + ' knowledge';
+    const brief        = objectives?.[0]?.brief        || 'General ' + module + ' knowledge';
     const sessionNotes = objectives?.[0]?.session_notes || '';
 
-    // ── 3. Fetch page content ────────────────────────────────────────────
-    let pageText;
-    try {
-      pageText = await fetchPageText(source.url);
-    } catch (fetchErr) {
-      // Mark as attempted even on fetch failure so we don't retry immediately
-      await supabase.from('sources').update({ last_crawled_at: new Date().toISOString() }).eq('id', source.id);
-      return json(res, 200, {
-        processed: false,
-        message: 'Could not fetch ' + source.url + ': ' + fetchErr.message,
-        source: source.source_name || source.url
-      });
+    // ── 3. Load existing URLs for dedup ───────────────────────────────
+    const { data: existing } = await supabase
+      .from('findings')
+      .select('url')
+      .eq('module', module);
+    const existingUrls = new Set((existing || []).map(f => f.url).filter(Boolean));
+
+    // ── 4. Generate search queries ─────────────────────────────────────
+    const searchQueries = await generateSearchQueries(
+      queryRow.query, brief, sessionNotes, module
+    );
+
+    if (!searchQueries.length) {
+      await supabase.from('queries').update({ status: 'pending' }).eq('id', queryRow.id);
+      return json(res, 200, { processed: false, message: 'Could not generate search queries' });
     }
 
-    // ── 4. Evaluate with Gemini ──────────────────────────────────────────
-    let findings;
-    try {
-      findings = await evaluateContent(pageText, source.url, module, brief, sessionNotes);
-    } catch (evalErr) {
-      await supabase.from('sources').update({ last_crawled_at: new Date().toISOString() }).eq('id', source.id);
-      return json(res, 200, {
-        processed: false,
-        message: 'Evaluation failed for ' + source.url + ': ' + evalErr.message,
-        source: source.source_name || source.url
-      });
+    // ── 5. Search + evaluate loop ──────────────────────────────────────
+    let allFindings   = [];
+    const target      = queryRow.target_sources;
+    const alreadyHave = queryRow.findings_count;
+    const stillNeed   = target - alreadyHave;
+
+    for (const sq of searchQueries) {
+      if (allFindings.length >= stillNeed) break; // target met
+
+      let results;
+      try { results = await tavilySearch(sq); }
+      catch (e) { console.warn('[crawl] Tavily failed:', e.message); continue; }
+
+      let batch;
+      try {
+        batch = await evaluateBatch(
+          results, queryRow.query, brief, sessionNotes, module, existingUrls
+        );
+      } catch (e) { console.warn('[crawl] Eval failed:', e.message); continue; }
+
+      for (const f of batch) { if (f.url) existingUrls.add(f.url); }
+      allFindings = allFindings.concat(batch);
     }
 
-    // ── 5. Save findings ─────────────────────────────────────────────────
+    // ── 6. Save findings ───────────────────────────────────────────────
     let savedCount = 0;
-    if (findings.length > 0) {
-      const rows = findings.map(f => ({
+    if (allFindings.length > 0) {
+      const rows = allFindings.map(f => ({
         module,
-        source_id:  source.id,
-        url:        source.url,
-        topic_tags: f.topic_tags  || [],
-        confidence: f.confidence  || 0.5,
-        technical:  f.technical   || '',
-        plain:      f.plain       || '',
-        practical:  f.practical   || '',
+        query_id:   queryRow.id,
+        source_id:  null,
+        url:        f.url,
+        topic_tags: f.topic_tags || [],
+        confidence: f.confidence || 0.7,
+        technical:  f.technical  || '',
+        plain:      f.plain      || '',
+        practical:  f.practical  || '',
         status:     'pending'
       }));
-
-      const { error: insertErr } = await supabase.from('findings').insert(rows);
-      if (insertErr) throw insertErr;
+      const { error } = await supabase.from('findings').insert(rows);
+      if (error) throw error;
       savedCount = rows.length;
     }
 
-    // ── 6. Update last_crawled_at on source ──────────────────────────────
-    await supabase
-      .from('sources')
-      .update({ last_crawled_at: new Date().toISOString() })
-      .eq('id', source.id);
+    // ── 7. Update query progress ───────────────────────────────────────
+    const newCount = alreadyHave + savedCount;
+    const newStatus = newCount >= target ? 'complete' : 'running';
+    await supabase.from('queries').update({
+      findings_count: newCount,
+      status:         newStatus,
+      completed_at:   newStatus === 'complete' ? new Date().toISOString() : null
+    }).eq('id', queryRow.id);
 
     return json(res, 200, {
       processed:  true,
-      source:     source.source_name || source.url,
-      url:        source.url,
-      findings:   savedCount,
-      message:    savedCount > 0
-        ? 'Crawled ' + (source.source_name || source.url) + ' — ' + savedCount + ' finding' + (savedCount !== 1 ? 's' : '') + ' added'
-        : 'Crawled ' + (source.source_name || source.url) + ' — no relevant content found'
+      queryId:    queryRow.id,
+      query:      queryRow.query,
+      target:     target,
+      found:      newCount,
+      newFindings: savedCount,
+      complete:   newStatus === 'complete',
+      message:    savedCount + ' new finding' + (savedCount !== 1 ? 's' : '') + ' added' +
+                  (newStatus === 'complete' ? ' — target reached! Ready for review.' : ' (' + newCount + '/' + target + ')')
     });
 
   } catch (err) {
