@@ -122,24 +122,31 @@ module.exports = async function handler(req, res) {
           .eq('id', objectiveId)
           .single();
 
+        const isSummaryRequest = req.body.summaryRequest === true;
+
         const systemPrompt = [
           'You are Gemini, the research partner for Mobius Factory — an autonomous knowledge base system.',
           'You are working on the ' + (obj?.module || 'unknown').toUpperCase() + ' module.',
-          'Your role in this Brief session is to help the admin refine research objectives and identify high-quality sources to crawl.',
           '',
-          'Current objective: ' + (obj?.brief || 'Unknown'),
+          'Your role is to converse naturally with the admin to understand their research interest for this module.',
+          'Listen carefully, ask clarifying questions, and help shape their thinking.',
+          '',
           obj?.session_notes ? 'Previous session notes: ' + obj.session_notes : '',
           '',
-          'Guidelines:',
-          '- Be concise and direct.',
-          '- When proposing sources, include them at the END of your response in this exact format:',
-          '  ```sources',
-          '  [{"url":"https://...","source_name":"...","authority_weight":0.8,"crawl_frequency":"weekly"}]',
-          '  ```',
-          '- authority_weight: 0–1 (1 = highest authority, e.g. WHO, PubMed, IMF).',
-          '- crawl_frequency: "daily", "weekly", or "monthly".',
-          '- Only propose sources when specifically discussing what to crawl.',
-          '- Focus on evidence-based, authoritative sources relevant to the ' + (obj?.module || '') + ' domain.'
+          isSummaryRequest
+            ? 'The admin has clicked Save Brief. Produce a structured summary of the discussion so far in this exact format:\n\n' +
+              'MISSION STATEMENT\n' +
+              'A single clear paragraph describing the overarching purpose of this knowledge layer — what it is ultimately for and who it serves.\n\n' +
+              'RESEARCH OBJECTIVES\n' +
+              '1. [Title] — one sentence describing this research direction\n' +
+              '2. [Title] — one sentence describing this research direction\n' +
+              '(list as many as the conversation warrants)\n\n' +
+              'PROPOSED SOURCES\n' +
+              'List 3–8 high-authority sources relevant to the research objectives, one per line: Name | URL | crawl frequency (daily/weekly/monthly)\n\n' +
+              'Be specific and substantive. This will be reviewed and approved by the admin before being committed.'
+            : 'Converse naturally. Do not produce structured summaries unless asked. When the admin asks you to propose sources, include them at the END of your response in this exact format:\n' +
+              '```sources\n[{"url":"https://...","source_name":"...","authority_weight":0.8,"crawl_frequency":"weekly"}]\n```\n' +
+              'authority_weight: 0–1 (1 = highest authority). crawl_frequency: "daily", "weekly", or "monthly".'
         ].filter(Boolean).join('\n');
 
         const fullMessages = [
