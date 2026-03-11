@@ -1,5 +1,5 @@
 {
-  "name": "mobius-vercel",
+  "name": "mobius-factory",
   "version": "1.0.0",
   "scripts": {
     "dev": "node server.js",

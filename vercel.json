@@ -1,28 +1,12 @@
 {
   "version": 2,
   "routes": [
-    {"src": "/auth/google/callback",  "dest": "/api/auth/[service]?service=google&action=callback"},
-    {"src": "/auth/google/status",    "dest": "/api/auth/[service]?service=google&action=status"},
-    {"src": "/auth/google",           "dest": "/api/auth/[service]?service=google&action=index"},
-    {"src": "/auth/dropbox/callback", "dest": "/api/auth/[service]?service=dropbox&action=callback"},
-    {"src": "/auth/dropbox",          "dest": "/api/auth/[service]?service=dropbox&action=index"},
-    {"src": "/ask",                   "dest": "/api/query/[action]?action=ask"},
-    {"src": "/parse",                 "dest": "/api/query/[action]?action=parse"},
-    {"src": "/upload",                "dest": "/api/upload"},
-    {"src": "/api/chat-history",      "dest": "/api/data?action=history"},
-    {"src": "/api/login",             "dest": "/api/auth/user/[action]?action=login"},
-    {"src": "/api/signup",            "dest": "/api/auth/user/[action]?action=signup"},
-    {"src": "/api/google/info",       "dest": "/api/services/google?action=info"},
-    {"src": "/api/google/accounts",   "dest": "/api/services/google?action=accounts"},
-    {"src": "/api/google/disconnect", "dest": "/api/services/google?action=disconnect"},
-    {"src": "/api/dropbox",           "dest": "/api/services/google?action=dropbox"},
-    {"src": "/api/dropbox/list",      "dest": "/api/services/google?action=dropbox-list"},
-    {"src": "/api/focus/(.*)",        "dest": "/api/focus/$1"},
-    {"src": "/api/sync/status",       "dest": "/api/data?action=sync-status"},
-    {"src": "/api/sync",              "dest": "/api/data?action=sync"},
-    {"src": "/login",                 "dest": "/login.html"},
-    {"src": "/signup",                "dest": "/signup.html"},
-    {"src": "/help/(.*)",             "dest": "/help/$1"},
-    {"src": "/(.*)",                  "dest": "/$1"}
+    {"src": "/auth/google/callback", "dest": "/api/auth/[service]?service=google&action=callback"},
+    {"src": "/auth/google/status",   "dest": "/api/auth/[service]?service=google&action=status"},
+    {"src": "/auth/google",          "dest": "/api/auth/[service]?service=google&action=index"},
+    {"src": "/api/admin/(.*)",       "dest": "/api/admin?action=$1"},
+    {"src": "/api/query/(.*)",       "dest": "/api/query/[action]?action=$1"},
+    {"src": "/admin",                "dest": "/admin/index.html"},
+    {"src": "/(.*)",                 "dest": "/$1"}
   ]
 }

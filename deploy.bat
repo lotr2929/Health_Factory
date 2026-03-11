@@ -1,7 +1,7 @@
 @echo off
 cd /d "%~dp0"
 echo ========================================
-echo  Mobius Vercel Deployment
+echo  Mobius Factory Deployment
 echo ========================================
 echo.
 
@@ -19,7 +19,7 @@ if /i not "%CONFIRM%"=="Y" (
 )
 
 set /p MSG="Enter commit message (or press Enter for default): "
-if "%MSG%"=="" set MSG=Update Mobius
+if "%MSG%"=="" set MSG=Update Factory
 
 echo.
 echo [1/3] Staging all changes...
@@ -38,7 +38,7 @@ echo.
 if %ERRORLEVEL%==0 (
     echo ========================================
     echo  Success! Vercel is now deploying.
-    echo  Check: https://mobius-vercel.vercel.app
+    echo  Check: https://mobius-factory.vercel.app
     echo ========================================
 ) else (
     echo ========================================

@@ -1,0 +1,371 @@
+// api/admin.js — Mobius Factory admin API
+// Routes (via vercel.json): /api/admin/:action
+//
+// Actions:
+//   GET  stats           — objective/pending/knowledge counts (scoped to module)
+//   GET  modules         — list distinct modules in DB
+//   GET  objectives      — list objectives for active module
+//   POST objectives      — create objective in active module
+//   POST brief-chat      — Gemini brief conversation turn
+//   POST brief-end       — finalise brief: save session_notes + sources
+//   POST sources         — save a single approved source
+//   GET  findings        — list pending findings for active module
+//   PATCH findings       — approve or discard a finding
+//   GET  knowledge       — list knowledge entries for active module
+//   POST review-chat     — Gemini review conversation turn
+//   POST provision       — auto-create schema if missing
+
+const { supabase, provision } = require('./_supabase');
+const { askGemini, askWebSearch, detectsCutoff } = require('./_ai');
+
+// ── Auth guard ─────────────────────────────────────────────────────────────
+async function getAuthedUser(req) {
+  const cookie = req.headers.cookie || '';
+  const match  = cookie.match(/fh_session=([^;]+)/);
+  if (!match) return null;
+  const token = decodeURIComponent(match[1]);
+  const { data } = await supabase
+    .from('google_tokens')
+    .select('user_id, email, name, picture')
+    .eq('session_token', token)
+    .single();
+  return data || null;
+}
+
+function json(res, status, body) {
+  res.status(status).json(body);
+}
+
+// ── Main handler ────────────────────────────────────────────────────────────
+module.exports = async function handler(req, res) {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PATCH,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  if (req.method === 'OPTIONS') return res.status(204).end();
+
+  const action = req.query.action;
+
+  // Auth check
+  const user = await getAuthedUser(req);
+  if (!user) return json(res, 401, { error: 'Not authenticated' });
+
+  // Active module — passed as query param or request body
+  const module = (req.query.module || req.body?.module || '').toLowerCase().trim();
+
+  try {
+    switch (action) {
+
+      // ── PROVISION ──────────────────────────────────────────────────────
+      case 'provision': {
+        const ok = await provision();
+        return json(res, 200, { ok });
+      }
+
+      // ── MODULES ────────────────────────────────────────────────────────
+      case 'modules': {
+        // Return list of distinct module names across all tables
+        const { data, error } = await supabase
+          .from('objectives')
+          .select('module')
+          .order('module');
+        if (error) throw error;
+        const modules = [...new Set((data || []).map(r => r.module))];
+        return json(res, 200, modules);
+      }
+
+      // ── STATS ──────────────────────────────────────────────────────────
+      case 'stats': {
+        if (!module) return json(res, 400, { error: 'module required' });
+        const [{ count: objectives }, { count: pending }, { count: knowledge }] = await Promise.all([
+          supabase.from('objectives').select('*', { count: 'exact', head: true }).eq('module', module),
+          supabase.from('findings').select('*', { count: 'exact', head: true }).eq('module', module).eq('status', 'pending'),
+          supabase.from('knowledge').select('*', { count: 'exact', head: true }).eq('module', module)
+        ]);
+        return json(res, 200, { objectives, pending, knowledge, module });
+      }
+
+      // ── OBJECTIVES ─────────────────────────────────────────────────────
+      case 'objectives': {
+        if (!module) return json(res, 400, { error: 'module required' });
+        if (req.method === 'GET') {
+          const { data, error } = await supabase
+            .from('objectives')
+            .select('*')
+            .eq('module', module)
+            .order('created_at', { ascending: false });
+          if (error) throw error;
+          return json(res, 200, data);
+        }
+        if (req.method === 'POST') {
+          const { brief } = req.body;
+          if (!brief) return json(res, 400, { error: 'brief required' });
+          const { data, error } = await supabase
+            .from('objectives')
+            .insert([{ module, brief, active: true }])
+            .select()
+            .single();
+          if (error) throw error;
+          return json(res, 201, data);
+        }
+        return json(res, 405, { error: 'Method not allowed' });
+      }
+
+      // ── BRIEF CHAT ─────────────────────────────────────────────────────
+      case 'brief-chat': {
+        if (req.method !== 'POST') return json(res, 405, { error: 'POST only' });
+        const { objectiveId, messages } = req.body;
+        if (!objectiveId || !messages) return json(res, 400, { error: 'objectiveId and messages required' });
+
+        const { data: obj } = await supabase
+          .from('objectives')
+          .select('brief, session_notes, module')
+          .eq('id', objectiveId)
+          .single();
+
+        const systemPrompt = [
+          'You are Gemini, the research partner for Mobius Factory — an autonomous knowledge base system.',
+          'You are working on the ' + (obj?.module || 'unknown').toUpperCase() + ' module.',
+          'Your role in this Brief session is to help the admin refine research objectives and identify high-quality sources to crawl.',
+          '',
+          'Current objective: ' + (obj?.brief || 'Unknown'),
+          obj?.session_notes ? 'Previous session notes: ' + obj.session_notes : '',
+          '',
+          'Guidelines:',
+          '- Be concise and direct.',
+          '- When proposing sources, include them at the END of your response in this exact format:',
+          '  ```sources',
+          '  [{"url":"https://...","source_name":"...","authority_weight":0.8,"crawl_frequency":"weekly"}]',
+          '  ```',
+          '- authority_weight: 0–1 (1 = highest authority, e.g. WHO, PubMed, IMF).',
+          '- crawl_frequency: "daily", "weekly", or "monthly".',
+          '- Only propose sources when specifically discussing what to crawl.',
+          '- Focus on evidence-based, authoritative sources relevant to the ' + (obj?.module || '') + ' domain.'
+        ].filter(Boolean).join('\n');
+
+        const fullMessages = [
+          { role: 'user', content: systemPrompt },
+          { role: 'assistant', content: 'Understood. Ready to help with the brief.' },
+          ...messages
+        ];
+
+        const result = await askGemini(fullMessages);
+        const rawText = result.text;
+
+        let proposedSources = [];
+        const srcMatch = rawText.match(/```sources\s*([\s\S]*?)```/);
+        if (srcMatch) {
+          try { proposedSources = JSON.parse(srcMatch[1].trim()); } catch {}
+        }
+        const reply = rawText.replace(/```sources[\s\S]*?```/g, '').trim();
+
+        return json(res, 200, { reply, proposedSources });
+      }
+
+      // ── BRIEF END ──────────────────────────────────────────────────────
+      case 'brief-end': {
+        if (req.method !== 'POST') return json(res, 405, { error: 'POST only' });
+        const { objectiveId, messages } = req.body;
+        if (!objectiveId) return json(res, 400, { error: 'objectiveId required' });
+
+        const summaryPrompt = [
+          'You are summarising a Brief session for Mobius Factory — a domain knowledge base.',
+          'Based on the conversation below, write concise session notes (max 200 words) covering:',
+          '- The refined research objective',
+          '- Key research angles and directions agreed upon',
+          '- Any constraints or priorities noted',
+          'Write in plain text, no markdown headers.',
+          '',
+          'Conversation:',
+          (messages || []).map(m => m.role.toUpperCase() + ': ' + m.content).join('\n\n')
+        ].join('\n');
+
+        const summaryResult = await askGemini([{ role: 'user', content: summaryPrompt }]);
+        const sessionNotes = summaryResult.text.trim();
+
+        await supabase
+          .from('objectives')
+          .update({ session_notes: sessionNotes })
+          .eq('id', objectiveId);
+
+        const { count: sourcesCount } = await supabase
+          .from('sources')
+          .select('*', { count: 'exact', head: true })
+          .eq('objective_id', objectiveId)
+          .eq('approved', true);
+
+        return json(res, 200, { sessionNotes, sources: { count: sourcesCount || 0 } });
+      }
+
+      // ── SOURCES ────────────────────────────────────────────────────────
+      case 'sources': {
+        if (req.method !== 'POST') return json(res, 405, { error: 'POST only' });
+        if (!module) return json(res, 400, { error: 'module required' });
+        const { url, source_name, authority_weight, crawl_frequency, objective_id, approved } = req.body;
+        if (!url || !objective_id) return json(res, 400, { error: 'url and objective_id required' });
+
+        const { data: existing } = await supabase
+          .from('sources')
+          .select('id')
+          .eq('url', url)
+          .eq('objective_id', objective_id)
+          .single();
+
+        if (existing) {
+          await supabase.from('sources').update({ approved: !!approved }).eq('id', existing.id);
+          return json(res, 200, { id: existing.id, updated: true });
+        }
+
+        const { data, error } = await supabase
+          .from('sources')
+          .insert([{
+            module,
+            url,
+            source_name: source_name || url,
+            authority_weight: authority_weight || 1.0,
+            crawl_frequency: crawl_frequency || 'weekly',
+            objective_id,
+            approved: !!approved,
+            proposed_by_gemini: true
+          }])
+          .select()
+          .single();
+        if (error) throw error;
+        return json(res, 201, data);
+      }
+
+      // ── FINDINGS ───────────────────────────────────────────────────────
+      case 'findings': {
+        if (!module) return json(res, 400, { error: 'module required' });
+
+        if (req.method === 'GET') {
+          const { data: findings, error } = await supabase
+            .from('findings')
+            .select('*, sources(source_name, url, objective_id)')
+            .eq('module', module)
+            .eq('status', 'pending')
+            .order('crawled_at', { ascending: false });
+          if (error) throw error;
+
+          const { data: knowledge } = await supabase
+            .from('knowledge')
+            .select('topic_tags, plain')
+            .eq('module', module);
+
+          const knowledgeTags = new Set(
+            (knowledge || []).flatMap(k => k.topic_tags || []).map(t => t.toLowerCase())
+          );
+
+          const flagged = (findings || []).map(f => {
+            const fTags = (f.topic_tags || []).map(t => t.toLowerCase());
+            const overlap = fTags.filter(t => knowledgeTags.has(t)).length;
+            const redundant = fTags.length > 0 && overlap / fTags.length >= 0.6;
+            return { ...f, _redundant: redundant };
+          });
+
+          return json(res, 200, flagged);
+        }
+
+        if (req.method === 'PATCH') {
+          const { id, status } = req.body;
+          if (!id || !['approved', 'discarded'].includes(status)) {
+            return json(res, 400, { error: 'id and valid status required' });
+          }
+
+          await supabase.from('findings').update({ status }).eq('id', id);
+
+          if (status === 'approved') {
+            const { data: finding } = await supabase
+              .from('findings').select('*').eq('id', id).single();
+            if (finding) {
+              await supabase.from('knowledge').insert([{
+                module: finding.module,
+                finding_id: finding.id,
+                topic_tags: finding.topic_tags,
+                confidence: finding.confidence,
+                technical: finding.technical,
+                plain: finding.plain,
+                practical: finding.practical
+              }]);
+            }
+          }
+
+          return json(res, 200, { ok: true });
+        }
+
+        return json(res, 405, { error: 'Method not allowed' });
+      }
+
+      // ── KNOWLEDGE ──────────────────────────────────────────────────────
+      case 'knowledge': {
+        if (!module) return json(res, 400, { error: 'module required' });
+        if (req.method !== 'GET') return json(res, 405, { error: 'GET only' });
+        const { data, error } = await supabase
+          .from('knowledge')
+          .select('id, topic_tags, plain, confidence, approved_at')
+          .eq('module', module)
+          .order('approved_at', { ascending: false });
+        if (error) throw error;
+        return json(res, 200, data);
+      }
+
+      // ── REVIEW CHAT ────────────────────────────────────────────────────
+      case 'review-chat': {
+        if (req.method !== 'POST') return json(res, 405, { error: 'POST only' });
+        const { finding, knowledge, messages } = req.body;
+        if (!finding) return json(res, 400, { error: 'finding required' });
+
+        const isFirstMessage = !messages || messages.length === 0;
+        const knowledgeSummary = (knowledge || []).slice(0, 40).map((k, i) =>
+          `[${i + 1}] Tags: ${(k.topic_tags || []).join(', ')} | ${(k.plain || '').slice(0, 120)}`
+        ).join('\n');
+
+        const systemPrompt = [
+          'You are Gemini, reviewing a research finding for the Mobius Factory ' + (finding.module || '') + ' Knowledge Layer.',
+          'Your role: help the admin decide whether to approve or discard this finding.',
+          '',
+          '── FINDING ──',
+          'Module: ' + (finding.module || ''),
+          'Topics: ' + (finding.topic_tags || []).join(', '),
+          'Source: ' + (finding.url || 'Unknown'),
+          'Confidence: ' + Math.round((finding.confidence || 0) * 100) + '%',
+          'Plain: ' + (finding.plain || '—'),
+          'Technical: ' + (finding.technical || '—'),
+          'Practical: ' + (finding.practical || '—'),
+          '',
+          '── EXISTING KNOWLEDGE (dedup check) ──',
+          knowledgeSummary || 'Knowledge Layer is empty.',
+          '',
+          'Guidelines:',
+          '- On first message: assess whether this finding duplicates existing knowledge.',
+          '- Be honest about quality — flag low-confidence or poorly sourced findings.',
+          '- If a question requires current data, say so and the system will web search.',
+          '- Keep responses concise. Never approve or discard on behalf of the admin.'
+        ].join('\n');
+
+        const fullMessages = [
+          { role: 'user', content: systemPrompt },
+          { role: 'assistant', content: 'Understood. Ready to evaluate.' },
+          ...(isFirstMessage
+            ? [{ role: 'user', content: 'Please give your initial assessment of this finding.' }]
+            : messages)
+        ];
+
+        let result = await askGemini(fullMessages);
+        let reply = result.text;
+
+        if (detectsCutoff(reply)) {
+          const searchResult = await askWebSearch(fullMessages, 2);
+          reply = searchResult.reply;
+        }
+
+        return json(res, 200, { reply });
+      }
+
+      default:
+        return json(res, 404, { error: 'Unknown action: ' + action });
+    }
+  } catch (err) {
+    console.error('[admin] error:', err.message);
+    return json(res, 500, { error: err.message });
+  }
+};
