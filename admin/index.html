@@ -1014,6 +1014,7 @@
         $('btn-save-brief').style.display = 'none';
         appendMsg('assistant', 'Brief committed. You can now run the crawl to start building the Knowledge Layer.');
         toast('Brief saved', 'success');
+        setMode('review');
       } catch { toast('Failed to save brief', 'error'); }
       $('btn-save-brief').disabled = false;
     }
