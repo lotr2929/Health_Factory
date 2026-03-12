@@ -755,6 +755,11 @@
       // Restore last active module
       const saved = localStorage.getItem('fh_module');
       if (saved && modules.includes(saved)) selectModule(saved, false);
+      if (state.activeModule) {
+        $('crawl-btn-top').style.display = '';
+        $('crawl-count').style.display = '';
+        $('btn-review').style.display = '';
+      }
     } catch {}
   }
 
