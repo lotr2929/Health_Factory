@@ -613,7 +613,6 @@
       </div>
       <input id="crawl-count" type="number" min="1" max="100" value="1" style="display:none;width:46px;padding:3px 5px;font-family:var(--font);font-size:11px;background:var(--surface);border:1px solid var(--border);color:var(--text);border-radius:var(--radius);text-align:center;" title="Number of sources to crawl" />
       <button class="btn-xs outline" id="crawl-btn-top" style="display:none" title="Run crawl">↺ Crawl</button>
-      <button class="btn-xs outline" id="btn-review" onclick="window.location.href='/admin/review'">Review ↗</button>
       <div id="user-info">
         <img id="user-avatar" src="" alt="" style="display:none" />
         <span id="user-name"></span>
@@ -625,6 +624,7 @@
       <span id="mode-status">—</span>
       <div id="module-chips"></div>
       <div class="spacer"></div>
+      <a href="/admin/review" class="btn-xs outline" style="text-decoration:none;">Review ↗</a>
       <input id="module-new-input" type="text" placeholder="new module…" autocomplete="off" />
       <button class="btn-xs" id="btn-add-module">+ Add</button>
     </div>
