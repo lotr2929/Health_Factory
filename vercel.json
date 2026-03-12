@@ -8,6 +8,7 @@
     {"src": "/api/crawl",            "dest": "/api/crawl"},
     {"src": "/api/query/(.*)",       "dest": "/api/query/[action]?action=$1"},
     {"src": "/admin",                "dest": "/admin/index.html"},
+    {"src": "/admin/review",          "dest": "/admin/review.html"},
     {"src": "/(.*)",                 "dest": "/$1"}
   ],
   "crons": [

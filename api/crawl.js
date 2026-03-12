@@ -2,13 +2,17 @@
 //
 // POST /api/crawl { module, queryId }
 //
-// Per run:
-//   1. Load the active query (agreed text + target source count)
-//   2. Load brief (mission + research objectives) for context
-//   3. Gemini generates Tavily search queries from the research query
-//   4. Search + evaluate loop — keeps going until target met or exhausted
-//   5. Save findings linked to the query
-//   6. Update query status (running → complete when target met)
+// One round per call (Vercel 10s limit):
+//   1. Load active query
+//   2. Load brief for context
+//   3. Pick one unused Tavily search query (generated on first round, cached in queries.search_queries)
+//   4. Search + Gemini evaluate
+//   5. Save new findings
+//   6. Update query progress (findings_count, status)
+//   7. Return { found, target, complete, roundIndex, totalRounds }
+//
+// The browser fires repeated POSTs until complete === true or no rounds remain.
+// Cron hits the same endpoint — it runs one round per cron tick.
 
 const { supabase } = require('./_supabase');
 const { askGemini } = require('./_ai');
@@ -158,7 +162,7 @@ module.exports = async function handler(req, res) {
   let module  = (req.body?.module  || '').toLowerCase().trim();
   let queryId =  req.body?.queryId || null;
 
-  // Cron — pick least-recently-crawled module + its active query
+  // Cron — pick least-recently-crawled module
   if (isCron && !module) {
     const { data: mods } = await supabase
       .from('modules')
@@ -178,14 +182,9 @@ module.exports = async function handler(req, res) {
     // ── 1. Load active query ───────────────────────────────────────────
     let queryRow;
     if (queryId) {
-      const { data } = await supabase
-        .from('queries')
-        .select('*')
-        .eq('id', queryId)
-        .single();
+      const { data } = await supabase.from('queries').select('*').eq('id', queryId).single();
       queryRow = data;
     } else {
-      // Pick the most recent running or pending query for this module
       const { data } = await supabase
         .from('queries')
         .select('*')
@@ -197,24 +196,20 @@ module.exports = async function handler(req, res) {
     }
 
     if (!queryRow) {
-      return json(res, 200, {
-        processed: false,
-        message: 'No active query found for module "' + module + '". Discuss and agree on a query in the Brief session first.'
-      });
+      return json(res, 200, { processed: false, message: 'No active query. Agree on a query in the Query tab first.' });
     }
 
-    // Check if already met target
     if (queryRow.findings_count >= queryRow.target_sources) {
       return json(res, 200, {
         processed: false,
-        message: 'Query target already met (' + queryRow.findings_count + '/' + queryRow.target_sources + '). Start a new query or review findings.'
+        complete:  true,
+        found:     queryRow.findings_count,
+        target:    queryRow.target_sources,
+        message:   'Target already met.'
       });
     }
 
-    // Mark as running
-    await supabase.from('queries').update({ status: 'running' }).eq('id', queryRow.id);
-
-    // ── 2. Load brief for context ──────────────────────────────────────
+    // ── 2. Load brief ──────────────────────────────────────────────────
     const { data: objectives } = await supabase
       .from('objectives')
       .select('brief, session_notes')
@@ -226,51 +221,78 @@ module.exports = async function handler(req, res) {
     const brief        = objectives?.[0]?.brief        || 'General ' + module + ' knowledge';
     const sessionNotes = objectives?.[0]?.session_notes || '';
 
-    // ── 3. Load existing URLs for dedup ───────────────────────────────
-    const { data: existing } = await supabase
-      .from('findings')
-      .select('url')
-      .eq('module', module);
+    // ── 3. Get or generate search query list (cached in queries.search_queries) ──
+    let searchQueries = [];
+    let roundIndex    = 0;
+
+    if (queryRow.search_queries && Array.isArray(queryRow.search_queries) && queryRow.search_queries.length > 0) {
+      searchQueries = queryRow.search_queries;
+      roundIndex    = queryRow.round_index || 0;
+    } else {
+      // First round — generate and cache
+      searchQueries = await generateSearchQueries(queryRow.query, brief, sessionNotes, module);
+      if (!searchQueries.length) {
+        return json(res, 200, { processed: false, message: 'Could not generate search queries from Gemini.' });
+      }
+      await supabase.from('queries').update({
+        search_queries: searchQueries,
+        round_index:    0,
+        status:         'running'
+      }).eq('id', queryRow.id);
+      roundIndex = 0;
+    }
+
+    // No more rounds left
+    if (roundIndex >= searchQueries.length) {
+      await supabase.from('queries').update({ status: 'complete' }).eq('id', queryRow.id);
+      return json(res, 200, {
+        processed: false,
+        complete:  true,
+        found:     queryRow.findings_count,
+        target:    queryRow.target_sources,
+        message:   'All search rounds exhausted.'
+      });
+    }
+
+    // Advance round index immediately (prevents duplicate work if called in parallel)
+    await supabase.from('queries').update({
+      round_index: roundIndex + 1,
+      status:      'running'
+    }).eq('id', queryRow.id);
+
+    // ── 4. Load existing URLs for dedup ───────────────────────────────
+    const { data: existing } = await supabase.from('findings').select('url').eq('module', module);
     const existingUrls = new Set((existing || []).map(f => f.url).filter(Boolean));
 
-    // ── 4. Generate search queries ─────────────────────────────────────
-    const searchQueries = await generateSearchQueries(
-      queryRow.query, brief, sessionNotes, module
-    );
-
-    if (!searchQueries.length) {
-      await supabase.from('queries').update({ status: 'pending' }).eq('id', queryRow.id);
-      return json(res, 200, { processed: false, message: 'Could not generate search queries' });
+    // ── 5. Run this round's search query ──────────────────────────────
+    const sq = searchQueries[roundIndex];
+    let results = [];
+    try {
+      results = await tavilySearch(sq);
+    } catch (e) {
+      console.warn('[crawl] Tavily failed:', e.message);
+      return json(res, 200, {
+        processed:   false,
+        found:       queryRow.findings_count,
+        target:      queryRow.target_sources,
+        roundIndex,
+        totalRounds: searchQueries.length,
+        message:     'Tavily search failed: ' + e.message
+      });
     }
 
-    // ── 5. Search + evaluate loop ──────────────────────────────────────
-    let allFindings   = [];
-    const target      = queryRow.target_sources;
-    const alreadyHave = queryRow.findings_count;
-    const stillNeed   = target - alreadyHave;
-
-    for (const sq of searchQueries) {
-      if (allFindings.length >= stillNeed) break; // target met
-
-      let results;
-      try { results = await tavilySearch(sq); }
-      catch (e) { console.warn('[crawl] Tavily failed:', e.message); continue; }
-
-      let batch;
-      try {
-        batch = await evaluateBatch(
-          results, queryRow.query, brief, sessionNotes, module, existingUrls
-        );
-      } catch (e) { console.warn('[crawl] Eval failed:', e.message); continue; }
-
-      for (const f of batch) { if (f.url) existingUrls.add(f.url); }
-      allFindings = allFindings.concat(batch);
+    // ── 6. Gemini evaluate ─────────────────────────────────────────────
+    let batch = [];
+    try {
+      batch = await evaluateBatch(results, queryRow.query, brief, sessionNotes, module, existingUrls);
+    } catch (e) {
+      console.warn('[crawl] Eval failed:', e.message);
     }
 
-    // ── 6. Save findings ───────────────────────────────────────────────
+    // ── 7. Save findings ───────────────────────────────────────────────
     let savedCount = 0;
-    if (allFindings.length > 0) {
-      const rows = allFindings.map(f => ({
+    if (batch.length > 0) {
+      const rows = batch.map(f => ({
         module,
         query_id:   queryRow.id,
         source_id:  null,
@@ -283,29 +305,32 @@ module.exports = async function handler(req, res) {
         status:     'pending'
       }));
       const { error } = await supabase.from('findings').insert(rows);
-      if (error) throw error;
-      savedCount = rows.length;
+      if (!error) savedCount = rows.length;
     }
 
-    // ── 7. Update query progress ───────────────────────────────────────
-    const newCount = alreadyHave + savedCount;
-    const newStatus = newCount >= target ? 'complete' : 'running';
+    // ── 8. Update query progress ───────────────────────────────────────
+    const newCount  = (queryRow.findings_count || 0) + savedCount;
+    const nextRound = roundIndex + 1;
+    const complete  = newCount >= queryRow.target_sources || nextRound >= searchQueries.length;
+    const newStatus = complete ? 'complete' : 'running';
+
     await supabase.from('queries').update({
       findings_count: newCount,
       status:         newStatus,
-      completed_at:   newStatus === 'complete' ? new Date().toISOString() : null
+      completed_at:   complete ? new Date().toISOString() : null
     }).eq('id', queryRow.id);
 
     return json(res, 200, {
-      processed:  true,
-      queryId:    queryRow.id,
-      query:      queryRow.query,
-      target:     target,
-      found:      newCount,
+      processed:   true,
+      queryId:     queryRow.id,
+      found:       newCount,
+      target:      queryRow.target_sources,
+      roundIndex,
+      totalRounds: searchQueries.length,
       newFindings: savedCount,
-      complete:   newStatus === 'complete',
-      message:    savedCount + ' new finding' + (savedCount !== 1 ? 's' : '') + ' added' +
-                  (newStatus === 'complete' ? ' — target reached! Ready for review.' : ' (' + newCount + '/' + target + ')')
+      complete,
+      message:     newCount + '/' + queryRow.target_sources + ' sources' +
+                   (complete ? ' — complete.' : ' (round ' + (roundIndex + 1) + '/' + searchQueries.length + ')')
     });
 
   } catch (err) {

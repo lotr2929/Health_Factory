@@ -613,6 +613,7 @@
       </div>
       <input id="crawl-count" type="number" min="1" max="100" value="1" style="display:none;width:46px;padding:3px 5px;font-family:var(--font);font-size:11px;background:var(--surface);border:1px solid var(--border);color:var(--text);border-radius:var(--radius);text-align:center;" title="Number of sources to crawl" />
       <button class="btn-xs outline" id="crawl-btn-top" style="display:none" title="Run crawl">↺ Crawl</button>
+      <button class="btn-xs outline" id="btn-review" style="display:none" onclick="window.location.href='/admin/review'">Review ↗</button>
       <div id="user-info">
         <img id="user-avatar" src="" alt="" style="display:none" />
         <span id="user-name"></span>
@@ -773,6 +774,7 @@
     $('module-status').textContent = mod.toUpperCase();
     $('crawl-btn-top').style.display = '';
     $('crawl-count').style.display = '';
+    $('btn-review').style.display = '';
     document.querySelectorAll('.module-chip').forEach(c =>
       c.classList.toggle('active', c.dataset.mod === mod)
     );
@@ -1464,37 +1466,58 @@
     $('crawl-btn-top').textContent = '↺ Crawl';
   }
 
-  // Update runCrawl to pass active queryId
+  // runCrawl — fires one round per call, polls query-status every 3s for live progress
   async function runCrawl() {
     if (!state.activeModule || state.crawlRunning) return;
-    const n = Math.max(1, Math.min(100, parseInt($('crawl-count').value) || 1));
+    const queryId = state.activeQueryId || undefined;
     state.crawlRunning = true;
     $('crawl-btn-top').disabled = true;
     $('crawl-btn').disabled = true;
-    let completed = 0;
-    for (let i = 0; i < n; i++) {
-      const label = n === 1 ? '↺ Crawling…' : '↺ ' + (i + 1) + '/' + n;
-      $('crawl-btn-top').textContent = label;
-      $('crawl-btn').textContent = label;
+
+    // Start polling for live progress display
+    let pollTimer = setInterval(async () => {
+      if (!queryId) return;
+      try {
+        const r = await fetch('/api/admin/query-status?queryId=' + queryId);
+        if (!r.ok) return;
+        const d = await r.json();
+        const label = d.found + '/' + d.target;
+        $('crawl-btn-top').textContent = '↺ ' + label;
+        $('crawl-btn').textContent     = '↺ ' + label;
+        // Update query chip in list
+        const chip = document.querySelector('.brief-item[data-id="' + queryId + '"] .brief-item-meta');
+        if (chip) chip.innerHTML = '<span class="status-dot active"></span>' + d.status + ' &middot; ' + label + ' sources';
+      } catch {}
+    }, 3000);
+
+    // Fire rounds until complete or no more rounds
+    let complete = false;
+    while (!complete) {
       try {
         const r = await fetch('/api/crawl', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ module: state.activeModule, queryId: state.activeQueryId || undefined })
+          body: JSON.stringify({ module: state.activeModule, queryId })
         });
         const d = await r.json();
-        await loadStats();
-        if (!d.processed) { toast(d.message || 'Done', ''); break; }
-        completed++;
-        if (d.complete) { toast(d.message, 'success'); break; }
-      } catch (e) { toast('Crawl error: ' + e.message, 'error'); break; }
+        if (d.complete || !d.processed) {
+          complete = true;
+          if (d.complete) toast(d.found + '/' + d.target + ' — complete', 'success');
+          else toast(d.message || 'Done', '');
+        }
+      } catch (e) {
+        toast('Crawl error: ' + e.message, 'error');
+        break;
+      }
     }
+
+    clearInterval(pollTimer);
     state.crawlRunning = false;
     $('crawl-btn-top').disabled = false;
     $('crawl-btn-top').textContent = '↺ Crawl';
     $('crawl-btn').disabled = false;
     $('crawl-btn').textContent = '↺ Run Crawl';
-    if (completed > 0) toast(completed + ' cycle' + (completed !== 1 ? 's' : '') + ' completed', 'success');
+    await loadStats();
     await loadFindings();
     await loadQueries();
   }

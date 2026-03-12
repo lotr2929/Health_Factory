@@ -487,6 +487,111 @@ module.exports = async function handler(req, res) {
         return json(res, 200, { reply });
       }
 
+      // ── QUERY STATUS (lightweight poll) ────────────────────────────────
+      case 'query-status': {
+        const qid = req.query.queryId;
+        if (!qid) return json(res, 400, { error: 'queryId required' });
+        const { data, error } = await supabase
+          .from('queries')
+          .select('findings_count, target_sources, status, round_index, search_queries')
+          .eq('id', qid)
+          .single();
+        if (error) throw error;
+        return json(res, 200, {
+          found:       data.findings_count || 0,
+          target:      data.target_sources || 0,
+          status:      data.status,
+          roundIndex:  data.round_index || 0,
+          totalRounds: (data.search_queries || []).length
+        });
+      }
+
+      // ── OBJECTIVES UPDATE ─────────────────────────────────────────────
+      case 'objectives-update': {
+        if (req.method !== 'PATCH') return json(res, 405, { error: 'PATCH only' });
+        const { id, brief, session_notes } = req.body;
+        if (!id) return json(res, 400, { error: 'id required' });
+        const updates = {};
+        if (brief         !== undefined) updates.brief         = brief;
+        if (session_notes !== undefined) updates.session_notes = session_notes;
+        const { error } = await supabase.from('objectives').update(updates).eq('id', id);
+        if (error) throw error;
+        return json(res, 200, { ok: true });
+      }
+
+      // ── KNOWLEDGE SYNTHESIS ───────────────────────────────────────────
+      case 'knowledge-synthesis': {
+        if (req.method !== 'POST') return json(res, 405, { error: 'POST only' });
+        const { queryId: qid2 } = req.body;
+        if (!qid2 || !module) return json(res, 400, { error: 'queryId and module required' });
+
+        const { data: qrow } = await supabase.from('queries').select('query').eq('id', qid2).single();
+
+        const { data: approved } = await supabase
+          .from('findings')
+          .select('plain, technical, practical, topic_tags, confidence, url')
+          .eq('query_id', qid2)
+          .eq('status', 'approved');
+
+        if (!approved || approved.length === 0) {
+          return json(res, 200, { synthesis: 'No approved findings yet for this query. Approve some sources first.' });
+        }
+
+        const findingsSummary = approved.map((f, i) =>
+          '[' + (i + 1) + '] ' + (f.plain || '') +
+          (f.practical ? ' Practical: ' + f.practical : '') +
+          ' (confidence: ' + Math.round((f.confidence || 0) * 100) + '%, source: ' + (f.url || '') + ')'
+        ).join('\n\n');
+
+        const prompt = [
+          'You are synthesising research findings for the Mobius Factory ' + module.toUpperCase() + ' Knowledge Layer.',
+          '',
+          'Research question: "' + (qrow?.query || '') + '"',
+          '',
+          'Approved findings (' + approved.length + '):',
+          findingsSummary,
+          '',
+          'Write a clear, concise Knowledge Summary (3-5 paragraphs) that:',
+          '- Answers the research question directly',
+          '- Synthesises the key insights across all findings',
+          '- Notes any important caveats or conflicting evidence',
+          '- Includes practical implications',
+          '',
+          'Write in plain English. No bullet points. No markdown headers.',
+          'This will be stored as a Knowledge Layer entry.'
+        ].join('\n');
+
+        const result = await askGemini([{ role: 'user', content: prompt }]);
+        return json(res, 200, { synthesis: result.text.trim() });
+      }
+
+      // ── DB STATS (memory in MB) ────────────────────────────────────────
+      case 'db-stats': {
+        const tables = ['objectives', 'sources', 'findings', 'knowledge', 'queries'];
+        const moduleResults = {};
+        const totalResults  = {};
+
+        await Promise.all(tables.map(async t => {
+          const [modQ, totQ] = await Promise.all([
+            module
+              ? supabase.from(t).select('*', { count: 'exact', head: true }).eq('module', module)
+              : Promise.resolve({ count: 0 }),
+            supabase.from(t).select('*', { count: 'exact', head: true })
+          ]);
+          moduleResults[t] = modQ.count || 0;
+          totalResults[t]  = totQ.count || 0;
+        }));
+
+        // Approximate MB using average row size estimates
+        const AVG_ROW_BYTES = { objectives: 800, sources: 400, findings: 1200, knowledge: 1500, queries: 600 };
+        const toMB = (t, n) => ((n * (AVG_ROW_BYTES[t] || 500)) / (1024 * 1024)).toFixed(3);
+
+        const totalModuleMB = tables.reduce((s, t) => s + parseFloat(toMB(t, moduleResults[t])), 0).toFixed(3);
+        const totalAllMB    = tables.reduce((s, t) => s + parseFloat(toMB(t, totalResults[t])),  0).toFixed(3);
+
+        return json(res, 200, { module, totalModuleMB, totalAllMB });
+      }
+
       default:
         return json(res, 404, { error: 'Unknown action: ' + action });
     }

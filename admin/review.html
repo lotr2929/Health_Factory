@@ -1,0 +1,876 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Mobius Factory — Review</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg:        #e2dccd;
+      --surface:   #f5eedd;
+      --surface2:  #ede5d4;
+      --border:    #c9bfae;
+      --accent:    #8d7c64;
+      --accent-dk: #574d3e;
+      --accent-lt: #b8a898;
+      --text:      #1a1208;
+      --text-dim:  #574d3e;
+      --text-lt:   #6b5a42;
+      --danger:    #a04040;
+      --success:   #4a7a4a;
+      --font:      'Century Gothic', 'Avenir', 'Segoe UI', 'Verdana', sans-serif;
+      --radius:    1px;
+    }
+    body { font-family: var(--font); background: var(--bg); color: var(--text); font-size: 14px; line-height: 1.5; min-height: 100vh; display: flex; flex-direction: column; }
+
+    /* ── LOGIN GATE ── */
+    #login-gate { display: flex; flex-direction: column; align-items: center; justify-content: center; flex: 1; gap: 20px; }
+    #login-gate h1 { font-size: 1.8rem; font-weight: normal; color: var(--accent-dk); letter-spacing: 0.04em; }
+    #login-gate p { color: var(--text-dim); font-size: 13px; }
+    .btn-google { display: flex; align-items: center; gap: 10px; background: var(--surface); border: 1px solid var(--border); color: var(--text); font-family: var(--font); font-size: 14px; padding: 8px 18px; border-radius: var(--radius); cursor: pointer; text-decoration: none; }
+    .btn-google:hover { background: var(--surface2); border-color: var(--accent); }
+
+    /* ── APP ── */
+    #app { display: none; flex-direction: column; height: 100vh; overflow: hidden; }
+
+    /* ── TOPBAR ── */
+    #topbar { background: var(--surface); border-bottom: 1px solid var(--border); flex-shrink: 0; }
+    #topbar-row1 { display: flex; align-items: center; padding: 0 16px; height: 40px; gap: 12px; }
+    .logo { font-size: 13px; color: var(--accent-dk); letter-spacing: 0.08em; white-space: nowrap; }
+    .spacer { flex: 1; }
+    #user-info { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-dim); }
+    #user-info img { width: 20px; height: 20px; border-radius: 50%; border: 1px solid var(--border); }
+    .btn-xs { background: var(--accent); border: none; color: #fff; font-family: var(--font); font-size: 11px; padding: 3px 8px; border-radius: var(--radius); cursor: pointer; white-space: nowrap; }
+    .btn-xs:hover { background: var(--accent-dk); }
+    .btn-xs.outline { background: transparent; border: 1px solid var(--border); color: var(--text-dim); }
+    .btn-xs.outline:hover { border-color: var(--accent); color: var(--text); background: transparent; }
+    .btn-xs:disabled { opacity: 0.4; cursor: default; }
+    #signout-btn { background: none; border: none; color: var(--text-lt); font-family: var(--font); font-size: 11px; cursor: pointer; padding: 1px 5px; }
+    #signout-btn:hover { color: var(--danger); }
+    #module-bar { display: flex; align-items: center; padding: 4px 16px; gap: 10px; border-top: 1px solid var(--border); background: var(--surface2); min-height: 34px; }
+    #module-status { font-size: 13px; font-weight: bold; letter-spacing: 0.1em; text-transform: uppercase; color: var(--accent-dk); min-width: 80px; }
+    #module-chips { display: flex; gap: 5px; flex-wrap: wrap; }
+    .module-chip { background: var(--surface); border: 1px solid var(--border); color: var(--text-dim); font-family: var(--font); font-size: 11px; padding: 2px 8px; border-radius: var(--radius); cursor: pointer; }
+    .module-chip:hover { border-color: var(--accent); color: var(--text); }
+    .module-chip.active { background: var(--accent-dk); border-color: var(--accent-dk); color: #fff; }
+
+    /* ── PINNED MISSION (always visible below topbar) ── */
+    #mission-bar {
+      background: var(--surface2);
+      border-bottom: 2px solid var(--border);
+      padding: 10px 20px;
+      flex-shrink: 0;
+      display: none;
+    }
+    #mission-bar.visible { display: block; }
+    #mission-bar h2 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-lt); font-weight: normal; margin-bottom: 4px; }
+    #mission-text { font-size: 13px; color: var(--text); margin-bottom: 8px; }
+    #objectives-text { font-size: 12px; color: var(--text-dim); white-space: pre-wrap; }
+    .edit-link { font-size: 11px; color: var(--accent); cursor: pointer; margin-left: 8px; border: none; background: none; font-family: var(--font); }
+    .edit-link:hover { color: var(--accent-dk); }
+    .inline-edit { width: 100%; background: var(--surface); border: 1px solid var(--accent); color: var(--text); font-family: var(--font); font-size: 13px; padding: 6px 8px; border-radius: var(--radius); resize: vertical; outline: none; margin-top: 4px; }
+
+    /* ── MAIN LAYOUT ── */
+    #main-layout { display: grid; grid-template-columns: 280px 1fr; flex: 1; overflow: hidden; min-height: 0; }
+
+    /* ── LEFT SIDEBAR ── */
+    #sidebar { background: var(--surface); border-right: 1px solid var(--border); display: flex; flex-direction: column; overflow: hidden; }
+    #sidebar-header { padding: 10px 14px 8px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+    #sidebar-header h3 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--text-dim); font-weight: normal; }
+    #query-list { flex: 1; overflow-y: auto; padding: 6px; }
+    .query-item { padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 4px; cursor: pointer; background: var(--surface2); }
+    .query-item:hover { background: var(--bg); }
+    .query-item.active { background: var(--bg); border-color: var(--accent); }
+    .qi-text { font-size: 12px; color: var(--text); overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+    .qi-meta { font-size: 10px; color: var(--text-lt); margin-top: 3px; display: flex; gap: 6px; align-items: center; }
+    .status-dot { width: 5px; height: 5px; border-radius: 50%; display: inline-block; }
+    .status-dot.complete { background: var(--success); }
+    .status-dot.running  { background: #c8a030; }
+    .status-dot.pending  { background: var(--accent-lt); }
+    .progress-badge { font-size: 10px; font-weight: bold; color: var(--accent-dk); }
+
+    /* ── RIGHT CONTENT ── */
+    #content { display: flex; flex-direction: column; overflow: hidden; }
+    #content-scroll { flex: 1; overflow-y: auto; padding: 0; }
+
+    /* ── SPREADSHEET TABLE ── */
+    #records-section { padding: 16px 20px; }
+    #records-section h3 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--text-dim); font-weight: normal; margin-bottom: 10px; display: flex; align-items: center; gap: 10px; }
+    #crawl-progress { font-size: 11px; color: var(--accent-dk); font-weight: bold; }
+
+    .records-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .records-table thead th { background: var(--surface); border: 1px solid var(--border); padding: 6px 10px; text-align: left; font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-lt); font-weight: normal; white-space: nowrap; position: sticky; top: 0; z-index: 1; }
+    .records-table tbody tr { cursor: pointer; transition: background 0.1s; }
+    .records-table tbody tr:hover { background: var(--surface2); }
+    .records-table tbody tr.selected { background: var(--bg); outline: 2px solid var(--accent); outline-offset: -1px; }
+    .records-table tbody td { border: 1px solid var(--border); padding: 6px 10px; vertical-align: top; color: var(--text); }
+    .records-table tbody td.type-cell { white-space: nowrap; }
+
+    .type-badge { font-size: 10px; padding: 2px 6px; border-radius: var(--radius); font-weight: normal; white-space: nowrap; }
+    .type-query    { background: #dce8f5; color: #1a4a7a; border: 1px solid #aac4e0; }
+    .type-finding  { background: #f5f0dc; color: #5a4a10; border: 1px solid #d4c888; }
+    .type-approved { background: #d4e8d4; color: var(--success); border: 1px solid #a0c8a0; }
+    .type-discarded{ background: #f5d4d4; color: var(--danger); border: 1px solid #d4a0a0; opacity: 0.6; }
+    .type-knowledge{ background: #e8daf5; color: #4a1a7a; border: 1px solid #c0a0e0; }
+
+    .conf-badge { font-size: 10px; padding: 1px 5px; border-radius: var(--radius); }
+    .conf-high { background: #d4e8d4; color: var(--success); border: 1px solid #b0d0b0; }
+    .conf-mid  { background: #f5ead4; color: #7a5a20; border: 1px solid #d4c090; }
+    .conf-low  { background: #f5d4d4; color: var(--danger); border: 1px solid #d4a0a0; }
+
+    .cell-truncate { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-dim); }
+    .tag-list { display: flex; flex-wrap: wrap; gap: 3px; }
+    .tag { font-size: 10px; background: var(--surface2); border: 1px solid var(--border); color: var(--text-dim); padding: 1px 5px; border-radius: var(--radius); }
+
+    /* ── RECORD DETAIL PANEL ── */
+    #detail-panel {
+      border-top: 2px solid var(--border);
+      background: var(--surface);
+      padding: 0;
+      flex-shrink: 0;
+      max-height: 45vh;
+      overflow-y: auto;
+      display: none;
+    }
+    #detail-panel.visible { display: block; }
+    #detail-header { padding: 10px 20px 8px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 10px; background: var(--surface2); position: sticky; top: 0; z-index: 2; }
+    #detail-header h3 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--text-dim); font-weight: normal; flex: 1; }
+    #detail-body { padding: 16px 20px; display: grid; grid-template-columns: 1fr 1fr; gap: 12px 24px; }
+    .field-group { display: flex; flex-direction: column; gap: 4px; }
+    .field-group.full { grid-column: 1 / -1; }
+    .field-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-lt); }
+    .field-value { font-size: 13px; color: var(--text); white-space: pre-wrap; line-height: 1.55; }
+    .field-edit { width: 100%; background: var(--surface2); border: 1px solid var(--border); color: var(--text); font-family: var(--font); font-size: 13px; padding: 6px 8px; border-radius: var(--radius); resize: vertical; outline: none; min-height: 60px; line-height: 1.55; }
+    .field-edit:focus { border-color: var(--accent); }
+    .field-link { font-size: 12px; color: var(--accent); text-decoration: none; word-break: break-all; }
+    .field-link:hover { color: var(--accent-dk); }
+    #detail-actions { padding: 10px 20px 14px; border-top: 1px solid var(--border); display: flex; gap: 8px; align-items: center; }
+
+    .btn-approve { background: var(--success); border: none; color: #fff; font-family: var(--font); font-size: 12px; padding: 5px 14px; border-radius: var(--radius); cursor: pointer; }
+    .btn-approve:hover { background: #3a6a3a; }
+    .btn-discard { background: transparent; border: 1px solid var(--danger); color: var(--danger); font-family: var(--font); font-size: 12px; padding: 5px 14px; border-radius: var(--radius); cursor: pointer; }
+    .btn-discard:hover { background: var(--danger); color: #fff; }
+    .btn-save { background: var(--accent); border: none; color: #fff; font-family: var(--font); font-size: 12px; padding: 5px 14px; border-radius: var(--radius); cursor: pointer; }
+    .btn-save:hover { background: var(--accent-dk); }
+
+    /* ── KNOWLEDGE SECTION ── */
+    #knowledge-section { padding: 0 20px 20px; border-top: 1px solid var(--border); margin-top: 4px; }
+    #knowledge-section h3 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--text-dim); font-weight: normal; padding: 14px 0 10px; display: flex; align-items: center; gap: 10px; }
+    #knowledge-spinner { font-size: 11px; color: var(--text-lt); font-style: italic; }
+    #knowledge-textarea { width: 100%; min-height: 160px; background: var(--surface2); border: 1px solid var(--border); color: var(--text); font-family: var(--font); font-size: 13px; padding: 10px 12px; border-radius: var(--radius); resize: vertical; outline: none; line-height: 1.65; }
+    #knowledge-textarea:focus { border-color: var(--accent); }
+    #knowledge-actions { margin-top: 10px; display: flex; gap: 8px; align-items: center; }
+    #knowledge-saved-note { font-size: 11px; color: var(--success); display: none; }
+
+    /* ── MEMORY SECTION ── */
+    #memory-section { padding: 0 20px 24px; border-top: 1px solid var(--border); margin-top: 4px; }
+    #memory-section h3 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--text-dim); font-weight: normal; padding: 14px 0 10px; }
+    .memory-table { border-collapse: collapse; font-size: 12px; }
+    .memory-table th { text-align: left; font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-lt); font-weight: normal; padding: 4px 14px 4px 0; border-bottom: 1px solid var(--border); }
+    .memory-table td { padding: 5px 14px 5px 0; border-bottom: 1px solid var(--surface2); color: var(--text); }
+    .memory-table td:not(:first-child) { font-variant-numeric: tabular-nums; text-align: right; padding-right: 20px; }
+    .memory-table th:not(:first-child) { text-align: right; padding-right: 20px; }
+    .memory-total td { font-weight: bold; border-top: 1px solid var(--border); color: var(--accent-dk); }
+    .memory-note { font-size: 11px; color: var(--text-lt); margin-top: 10px; font-style: italic; }
+
+    /* ── EMPTY / LOADING ── */
+    .empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 40px 20px; color: var(--text-lt); gap: 8px; }
+    .empty-state .icon { font-size: 1.4rem; opacity: 0.35; }
+    .empty-state p { font-size: 12px; text-align: center; }
+
+    /* ── TOAST ── */
+    #toast { position: fixed; bottom: 16px; right: 16px; background: var(--surface); border: 1px solid var(--border); color: var(--text); font-family: var(--font); font-size: 12px; padding: 7px 14px; border-radius: var(--radius); box-shadow: 2px 4px 10px rgba(0,0,0,0.1); opacity: 0; transform: translateY(6px); transition: opacity 0.2s, transform 0.2s; pointer-events: none; z-index: 100; }
+    #toast.show { opacity: 1; transform: translateY(0); }
+    #toast.success { border-color: var(--success); color: var(--success); }
+    #toast.error   { border-color: var(--danger);  color: var(--danger); }
+
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--accent-lt); }
+  </style>
+</head>
+<body>
+
+<!-- LOGIN GATE -->
+<div id="login-gate">
+  <h1>Mobius Factory</h1>
+  <p>Review — admin access only</p>
+  <a href="/auth/google" class="btn-google">
+    <svg width="16" height="16" viewBox="0 0 24 24">
+      <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+      <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+      <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z"/>
+      <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
+    </svg>
+    Sign in with Google
+  </a>
+</div>
+
+<!-- MAIN APP -->
+<div id="app">
+
+  <!-- TOPBAR -->
+  <div id="topbar">
+    <div id="topbar-row1">
+      <span class="logo">MOBIUS FACTORY</span>
+      <span style="font-size:11px;color:var(--text-lt);border-left:1px solid var(--border);padding-left:10px;letter-spacing:0.05em;">REVIEW</span>
+      <div class="spacer"></div>
+      <button class="btn-xs outline" onclick="window.location.href='/admin'">← Admin</button>
+      <div id="user-info">
+        <img id="user-avatar" src="" alt="" style="display:none" />
+        <span id="user-name"></span>
+        <button id="signout-btn">sign out</button>
+      </div>
+    </div>
+    <div id="module-bar">
+      <span id="module-status">No module</span>
+      <div id="module-chips"></div>
+    </div>
+  </div>
+
+  <!-- MISSION BAR (pinned) -->
+  <div id="mission-bar">
+    <div style="display:flex;align-items:flex-start;gap:6px;margin-bottom:6px;">
+      <h2 style="margin:0;padding:0;">Mission Statement</h2>
+      <button class="edit-link" id="btn-edit-mission">edit</button>
+    </div>
+    <div id="mission-text">—</div>
+    <textarea id="mission-edit" class="inline-edit" style="display:none;min-height:60px;" rows="2"></textarea>
+    <div style="display:flex;align-items:flex-start;gap:6px;margin-top:10px;margin-bottom:4px;">
+      <h2 style="margin:0;padding:0;">Research Objectives</h2>
+    </div>
+    <div id="objectives-text">—</div>
+    <textarea id="objectives-edit" class="inline-edit" style="display:none;min-height:80px;" rows="3"></textarea>
+    <div id="mission-save-row" style="display:none;margin-top:8px;gap:6px;display:none;">
+      <button class="btn-xs" id="btn-save-mission">Save</button>
+      <button class="btn-xs outline" id="btn-cancel-mission">Cancel</button>
+    </div>
+  </div>
+
+  <!-- MAIN LAYOUT -->
+  <div id="main-layout">
+
+    <!-- LEFT: Query list -->
+    <div id="sidebar">
+      <div id="sidebar-header">
+        <h3>Research Queries</h3>
+      </div>
+      <div id="query-list">
+        <div class="empty-state"><div class="icon">○</div><p>Select a module</p></div>
+      </div>
+    </div>
+
+    <!-- RIGHT: Records + detail + knowledge + memory -->
+    <div id="content">
+      <div id="content-scroll">
+
+        <!-- Records spreadsheet -->
+        <div id="records-section">
+          <h3>
+            Records
+            <span id="crawl-progress" style="display:none"></span>
+            <button class="btn-xs outline" id="btn-run-crawl" style="display:none">↺ Top up crawl</button>
+          </h3>
+          <div id="records-table-wrap">
+            <div class="empty-state"><div class="icon">○</div><p>Select a query to review its records</p></div>
+          </div>
+        </div>
+
+        <!-- Knowledge Learnt -->
+        <div id="knowledge-section" style="display:none">
+          <h3>
+            Knowledge Learnt
+            <span id="knowledge-spinner"></span>
+          </h3>
+          <textarea id="knowledge-textarea" placeholder="Gemini is synthesising approved findings…"></textarea>
+          <div id="knowledge-actions">
+            <button class="btn-save" id="btn-save-knowledge">Save to Knowledge Layer</button>
+            <span id="knowledge-saved-note">✓ Saved</span>
+          </div>
+        </div>
+
+        <!-- Memory -->
+        <div id="memory-section" style="display:none;padding:0 20px 20px;border-top:1px solid var(--border);">
+          <p style="padding-top:14px;font-size:12px;color:var(--text-dim);">Memory: <span id="memory-line" style="font-weight:bold;color:var(--accent-dk);">—</span></p>
+        </div>
+
+      </div>
+
+      <!-- Record detail panel (slides up from bottom of content) -->
+      <div id="detail-panel">
+        <div id="detail-header">
+          <h3 id="detail-title">Record</h3>
+          <div id="detail-actions"></div>
+        </div>
+        <div id="detail-body"></div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+  const state = {
+    user:          null,
+    activeModule:  '',
+    activeQueryId: null,
+    objective:     null,
+    queries:       [],
+    records:       [],   // flat list: query row + findings for selected query
+    selectedRecord: null,
+    crawlRunning:  false,
+    knowledgeSaved: false
+  };
+
+  const $ = id => document.getElementById(id);
+
+  // ── TOAST ──
+  function toast(msg, type = '') {
+    const t = $('toast');
+    t.textContent = msg;
+    t.className = 'show ' + type;
+    clearTimeout(t._timer);
+    t._timer = setTimeout(() => t.className = '', 2800);
+  }
+
+  function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+  function enc(s) { return encodeURIComponent(s); }
+  function fmtDate(iso) { if (!iso) return '—'; return new Date(iso).toLocaleDateString('en-AU', { day:'numeric', month:'short', year:'numeric' }); }
+
+  // ── AUTH ──
+  async function checkAuth() {
+    try {
+      const r = await fetch('/auth/google/status');
+      const d = await r.json();
+      if (d.authenticated) { state.user = d; showApp(d); }
+    } catch {}
+  }
+
+  function showApp(user) {
+    $('login-gate').style.display = 'none';
+    $('app').style.display = 'flex';
+    if (user.name) $('user-name').textContent = user.name;
+    if (user.picture) { const img = $('user-avatar'); img.src = user.picture; img.style.display = ''; }
+    loadModules();
+  }
+
+  $('signout-btn').addEventListener('click', () => { window.location.href = '/auth/google?action=signout'; });
+
+  // ── MODULES ──
+  async function loadModules() {
+    try {
+      const r = await fetch('/api/admin/modules');
+      if (!r.ok) return;
+      const modules = await r.json();
+      renderModuleChips(modules);
+      const saved = localStorage.getItem('fh_module');
+      if (saved && modules.includes(saved)) selectModule(saved);
+    } catch {}
+  }
+
+  function renderModuleChips(modules) {
+    const chips = $('module-chips');
+    chips.innerHTML = modules.map(m =>
+      `<button class="module-chip ${state.activeModule === m ? 'active' : ''}" data-mod="${esc(m)}">${esc(m)}</button>`
+    ).join('');
+    chips.querySelectorAll('.module-chip').forEach(btn =>
+      btn.addEventListener('click', () => selectModule(btn.dataset.mod))
+    );
+  }
+
+  async function selectModule(mod) {
+    state.activeModule = mod;
+    localStorage.setItem('fh_module', mod);
+    $('module-status').textContent = mod.toUpperCase();
+    document.querySelectorAll('.module-chip').forEach(c =>
+      c.classList.toggle('active', c.dataset.mod === mod)
+    );
+    $('detail-panel').classList.remove('visible');
+    $('knowledge-section').style.display = 'none';
+    state.selectedRecord = null;
+    await Promise.all([loadObjective(), loadQueries()]);
+    await loadMemory();
+    $('memory-section').style.display = '';
+  }
+
+  // ── OBJECTIVE (mission + notes) ──
+  async function loadObjective() {
+    if (!state.activeModule) return;
+    try {
+      const r = await fetch('/api/admin/objectives?module=' + enc(state.activeModule));
+      if (!r.ok) return;
+      const objs = await r.json();
+      state.objective = objs.find(o => o.active) || objs[0] || null;
+      renderMission();
+    } catch {}
+  }
+
+  function renderMission() {
+    const obj = state.objective;
+    if (!obj) { $('mission-bar').classList.remove('visible'); return; }
+    $('mission-bar').classList.add('visible');
+    $('mission-text').textContent     = obj.brief        || '—';
+    $('objectives-text').textContent  = obj.session_notes || '—';
+    $('mission-edit').value     = obj.brief        || '';
+    $('objectives-edit').value  = obj.session_notes || '';
+  }
+
+  // ── EDIT MISSION ──
+  let missionEditing = false;
+  $('btn-edit-mission').addEventListener('click', () => {
+    missionEditing = !missionEditing;
+    $('mission-text').style.display      = missionEditing ? 'none' : '';
+    $('mission-edit').style.display      = missionEditing ? '' : 'none';
+    $('objectives-text').style.display   = missionEditing ? 'none' : '';
+    $('objectives-edit').style.display   = missionEditing ? '' : 'none';
+    $('mission-save-row').style.display  = missionEditing ? 'flex' : 'none';
+    $('btn-edit-mission').textContent    = missionEditing ? 'cancel' : 'edit';
+    if (!missionEditing) {
+      // cancelled — restore
+      $('mission-edit').value    = state.objective?.brief        || '';
+      $('objectives-edit').value = state.objective?.session_notes || '';
+    }
+  });
+
+  $('btn-save-mission').addEventListener('click', async () => {
+    if (!state.objective) return;
+    const brief        = $('mission-edit').value.trim();
+    const session_notes = $('objectives-edit').value.trim();
+    try {
+      await fetch('/api/admin/objectives-update', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: state.objective.id, brief, session_notes })
+      });
+      state.objective.brief        = brief;
+      state.objective.session_notes = session_notes;
+      missionEditing = false;
+      $('mission-text').textContent    = brief || '—';
+      $('objectives-text').textContent = session_notes || '—';
+      $('mission-text').style.display      = '';
+      $('mission-edit').style.display      = 'none';
+      $('objectives-text').style.display   = '';
+      $('objectives-edit').style.display   = 'none';
+      $('mission-save-row').style.display  = 'none';
+      $('btn-edit-mission').textContent    = 'edit';
+      toast('Mission saved', 'success');
+    } catch { toast('Save failed', 'error'); }
+  });
+
+  $('btn-cancel-mission').addEventListener('click', () => {
+    $('btn-edit-mission').click();
+  });
+
+  // ── QUERIES ──
+  async function loadQueries() {
+    if (!state.activeModule) return;
+    try {
+      const r = await fetch('/api/admin/queries?module=' + enc(state.activeModule));
+      if (!r.ok) return;
+      state.queries = await r.json();
+      renderQueryList();
+    } catch {}
+  }
+
+  function renderQueryList() {
+    const list = $('query-list');
+    if (!state.queries.length) {
+      list.innerHTML = '<div class="empty-state"><div class="icon">○</div><p>No queries yet</p></div>';
+      return;
+    }
+    list.innerHTML = state.queries.map(q => {
+      const dotClass = q.status === 'complete' ? 'complete' : q.status === 'running' ? 'running' : 'pending';
+      return `<div class="query-item ${state.activeQueryId === q.id ? 'active' : ''}" data-id="${q.id}">
+        <div class="qi-text">${esc(q.query)}</div>
+        <div class="qi-meta">
+          <span class="status-dot ${dotClass}"></span>
+          <span class="progress-badge">${q.findings_count}/${q.target_sources}</span>
+          &middot; ${fmtDate(q.created_at)}
+        </div>
+      </div>`;
+    }).join('');
+    list.querySelectorAll('.query-item').forEach(el =>
+      el.addEventListener('click', () => selectQuery(el.dataset.id))
+    );
+  }
+
+  async function selectQuery(id) {
+    state.activeQueryId = id;
+    state.selectedRecord = null;
+    state.knowledgeSaved = false;
+    $('knowledge-saved-note').style.display = 'none';
+    renderQueryList();
+    $('detail-panel').classList.remove('visible');
+    await loadRecords(id);
+    // Auto-generate synthesis
+    triggerSynthesis(id);
+  }
+
+  // ── RECORDS (flat spreadsheet: query row + its findings) ──
+  async function loadRecords(queryId) {
+    if (!queryId) return;
+    const q = state.queries.find(x => x.id === queryId);
+
+    // Show crawl progress + top-up button
+    if (q) {
+      $('crawl-progress').textContent = q.findings_count + '/' + q.target_sources;
+      $('crawl-progress').style.display = '';
+      $('btn-run-crawl').style.display = q.findings_count < q.target_sources ? '' : 'none';
+    }
+
+    // Load findings for this query
+    try {
+      const r = await fetch('/api/admin/findings?module=' + enc(state.activeModule));
+      if (!r.ok) return;
+      const allFindings = await r.json();
+      const findings = allFindings.filter(f => f.query_id === queryId ||
+        // fallback if query_id not populated — show all for module
+        (!f.query_id && state.activeModule));
+
+      // Build flat record list: query first, then findings
+      state.records = [
+        { _type: 'query', ...q },
+        ...findings.map(f => ({ _type: 'finding', ...f }))
+      ];
+
+      // Also load knowledge entries for this query
+      const kr = await fetch('/api/admin/knowledge?module=' + enc(state.activeModule));
+      if (kr.ok) {
+        const kRows = await kr.json();
+        const qKnowledge = kRows.filter(k => k.query_id === queryId || k.type === 'session_summary');
+        qKnowledge.forEach(k => state.records.push({ _type: 'knowledge', ...k }));
+      }
+
+      renderRecordsTable();
+      $('knowledge-section').style.display = '';
+    } catch (e) {
+      console.error(e);
+    }
+  }
+
+  function renderRecordsTable() {
+    const wrap = $('records-table-wrap');
+    if (!state.records.length) {
+      wrap.innerHTML = '<div class="empty-state"><div class="icon">○</div><p>No records for this query</p></div>';
+      return;
+    }
+
+    const rows = state.records.map((rec, idx) => {
+      const isSelected = state.selectedRecord?.id === rec.id && state.selectedRecord?._type === rec._type;
+      let typeBadge, col2, col3, col4, col5;
+
+      if (rec._type === 'query') {
+        typeBadge = `<span class="type-badge type-query">query</span>`;
+        col2 = `<div class="cell-truncate">${esc(rec.query || '—')}</div>`;
+        col3 = `<span class="progress-badge">${rec.findings_count}/${rec.target_sources}</span>`;
+        col4 = esc(rec.status || '—');
+        col5 = fmtDate(rec.created_at);
+      } else if (rec._type === 'finding') {
+        const statusType = rec.status === 'approved' ? 'type-approved' : rec.status === 'discarded' ? 'type-discarded' : 'type-finding';
+        const statusLabel = rec.status === 'approved' ? 'approved' : rec.status === 'discarded' ? 'discarded' : 'finding';
+        typeBadge = `<span class="type-badge ${statusType}">${statusLabel}</span>`;
+        const conf = (rec.confidence || 0);
+        const confClass = conf >= 0.7 ? 'conf-high' : conf >= 0.4 ? 'conf-mid' : 'conf-low';
+        const tags = (rec.topic_tags || []).slice(0,3).map(t => `<span class="tag">${esc(t)}</span>`).join('');
+        col2 = `<div class="cell-truncate">${esc(rec.plain || '—')}</div>`;
+        col3 = `<span class="conf-badge ${confClass}">${Math.round(conf*100)}%</span>`;
+        col4 = `<div class="tag-list">${tags}</div>`;
+        col5 = fmtDate(rec.crawled_at);
+      } else {
+        typeBadge = `<span class="type-badge type-knowledge">knowledge</span>`;
+        col2 = `<div class="cell-truncate">${esc(rec.plain || rec.summary || '—')}</div>`;
+        col3 = '—';
+        col4 = '—';
+        col5 = fmtDate(rec.approved_at);
+      }
+
+      return `<tr class="${isSelected ? 'selected' : ''}" data-idx="${idx}">
+        <td class="type-cell">${typeBadge}</td>
+        <td>${col2}</td>
+        <td>${col3}</td>
+        <td>${col4}</td>
+        <td style="white-space:nowrap;color:var(--text-lt);font-size:11px;">${col5}</td>
+      </tr>`;
+    }).join('');
+
+    wrap.innerHTML = `<table class="records-table">
+      <thead><tr>
+        <th>Type</th>
+        <th>Summary / Query</th>
+        <th>Conf / Progress</th>
+        <th>Tags / Status</th>
+        <th>Date</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+
+    wrap.querySelectorAll('tbody tr').forEach(tr =>
+      tr.addEventListener('click', () => openRecord(parseInt(tr.dataset.idx)))
+    );
+  }
+
+  // ── RECORD DETAIL ──
+  function openRecord(idx) {
+    const rec = state.records[idx];
+    if (!rec) return;
+    state.selectedRecord = rec;
+    renderRecordsTable(); // re-render to highlight selected row
+
+    const panel = $('detail-panel');
+    const body  = $('detail-body');
+    const acts  = $('detail-actions');
+    panel.classList.add('visible');
+
+    if (rec._type === 'query') {
+      $('detail-title').textContent = 'Query';
+      body.innerHTML = `
+        <div class="field-group full">
+          <div class="field-label">Research Question</div>
+          <div class="field-value">${esc(rec.query || '—')}</div>
+        </div>
+        <div class="field-group">
+          <div class="field-label">Status</div>
+          <div class="field-value">${esc(rec.status || '—')}</div>
+        </div>
+        <div class="field-group">
+          <div class="field-label">Progress</div>
+          <div class="field-value">${rec.findings_count}/${rec.target_sources} sources</div>
+        </div>
+        <div class="field-group">
+          <div class="field-label">Created</div>
+          <div class="field-value">${fmtDate(rec.created_at)}</div>
+        </div>
+        <div class="field-group">
+          <div class="field-label">Completed</div>
+          <div class="field-value">${fmtDate(rec.completed_at)}</div>
+        </div>`;
+      acts.innerHTML = '';
+
+    } else if (rec._type === 'finding') {
+      $('detail-title').textContent = 'Finding — ' + (rec.status || 'pending');
+      body.innerHTML = `
+        <div class="field-group full">
+          <div class="field-label">Plain Summary</div>
+          <textarea class="field-edit" id="edit-plain" rows="3">${esc(rec.plain || '')}</textarea>
+        </div>
+        <div class="field-group full">
+          <div class="field-label">Technical Detail</div>
+          <textarea class="field-edit" id="edit-technical" rows="3">${esc(rec.technical || '')}</textarea>
+        </div>
+        <div class="field-group full">
+          <div class="field-label">Practical Implication</div>
+          <textarea class="field-edit" id="edit-practical" rows="2">${esc(rec.practical || '')}</textarea>
+        </div>
+        <div class="field-group">
+          <div class="field-label">Topic Tags</div>
+          <div class="field-value">${(rec.topic_tags||[]).join(', ') || '—'}</div>
+        </div>
+        <div class="field-group">
+          <div class="field-label">Confidence</div>
+          <div class="field-value">${Math.round((rec.confidence||0)*100)}%</div>
+        </div>
+        <div class="field-group full">
+          <div class="field-label">Source URL</div>
+          <a href="${esc(rec.url||'#')}" target="_blank" class="field-link">${esc(rec.url||'—')}</a>
+        </div>`;
+
+      const isPending  = rec.status === 'pending';
+      const isApproved = rec.status === 'approved';
+      acts.innerHTML = `
+        ${isPending  ? `<button class="btn-approve" id="da-approve">✓ Approve</button>` : ''}
+        ${isPending  ? `<button class="btn-discard" id="da-discard">✕ Discard</button>` : ''}
+        ${isApproved ? `<button class="btn-discard" id="da-discard">Discard</button>` : ''}
+        <button class="btn-save" id="da-save">Save edits</button>`;
+
+      if ($('da-approve')) $('da-approve').addEventListener('click', () => reviewAction(rec.id, 'approved'));
+      if ($('da-discard')) $('da-discard').addEventListener('click', () => reviewAction(rec.id, 'discarded'));
+      $('da-save').addEventListener('click', () => saveFindingEdits(rec.id));
+
+    } else {
+      // knowledge
+      $('detail-title').textContent = 'Knowledge Entry';
+      body.innerHTML = `
+        <div class="field-group full">
+          <div class="field-label">Summary</div>
+          <textarea class="field-edit" id="edit-knowledge-plain" rows="6">${esc(rec.plain || rec.summary || '')}</textarea>
+        </div>
+        <div class="field-group">
+          <div class="field-label">Topic Tags</div>
+          <div class="field-value">${(rec.topic_tags||[]).join(', ') || '—'}</div>
+        </div>
+        <div class="field-group">
+          <div class="field-label">Saved</div>
+          <div class="field-value">${fmtDate(rec.approved_at)}</div>
+        </div>`;
+      acts.innerHTML = '<button class="btn-save" id="da-save-know">Save edits</button>';
+      $('da-save-know').addEventListener('click', () => saveKnowledgeEdits(rec.id));
+    }
+
+    // Scroll detail panel into view
+    panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+
+  // ── FINDING ACTIONS ──
+  async function reviewAction(id, status) {
+    try {
+      await fetch('/api/admin/findings', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, status, module: state.activeModule })
+      });
+      // Update in records array
+      const rec = state.records.find(r => r.id === id);
+      if (rec) rec.status = status;
+      state.selectedRecord = null;
+      $('detail-panel').classList.remove('visible');
+      renderRecordsTable();
+      toast(status === 'approved' ? '✓ Approved' : 'Discarded', status === 'approved' ? 'success' : '');
+      // Re-trigger synthesis since approved set changed
+      if (state.activeQueryId) triggerSynthesis(state.activeQueryId);
+    } catch { toast('Action failed', 'error'); }
+  }
+
+  async function saveFindingEdits(id) {
+    const plain     = $('edit-plain')?.value     || '';
+    const technical = $('edit-technical')?.value || '';
+    const practical = $('edit-practical')?.value || '';
+    try {
+      // Supabase direct update via admin findings PATCH
+      await fetch('/api/admin/findings', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, plain, technical, practical, module: state.activeModule })
+      });
+      const rec = state.records.find(r => r.id === id);
+      if (rec) { rec.plain = plain; rec.technical = technical; rec.practical = practical; }
+      renderRecordsTable();
+      toast('Edits saved', 'success');
+    } catch { toast('Save failed', 'error'); }
+  }
+
+  async function saveKnowledgeEdits(id) {
+    const plain = $('edit-knowledge-plain')?.value || '';
+    try {
+      // Knowledge entries — update via Supabase (reuse findings PATCH pattern via a new endpoint would be ideal;
+      // for now we use the knowledge action with a PUT-style PATCH on findings table isn't right —
+      // knowledge edits go through a simple fetch to a future endpoint; stub saves locally for now)
+      const rec = state.records.find(r => r.id === id && r._type === 'knowledge');
+      if (rec) { rec.plain = plain; rec.summary = plain; }
+      renderRecordsTable();
+      toast('Edits saved locally', 'success');
+    } catch { toast('Save failed', 'error'); }
+  }
+
+  // ── KNOWLEDGE SYNTHESIS ──
+  async function triggerSynthesis(queryId) {
+    if (!queryId || !state.activeModule) return;
+    $('knowledge-spinner').textContent = 'Gemini is synthesising…';
+    $('knowledge-textarea').value = '';
+    $('knowledge-textarea').disabled = true;
+    $('btn-save-knowledge').disabled = true;
+    try {
+      const r = await fetch('/api/admin/knowledge-synthesis', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ queryId, module: state.activeModule })
+      });
+      const d = await r.json();
+      $('knowledge-textarea').value = d.synthesis || '';
+    } catch {
+      $('knowledge-textarea').value = 'Could not generate synthesis. You can write it manually.';
+    }
+    $('knowledge-spinner').textContent = '';
+    $('knowledge-textarea').disabled = false;
+    $('btn-save-knowledge').disabled = false;
+  }
+
+  $('btn-save-knowledge').addEventListener('click', async () => {
+    if (!state.activeModule || !state.activeQueryId) return;
+    const summary = $('knowledge-textarea').value.trim();
+    if (!summary) { toast('Nothing to save', 'error'); return; }
+    try {
+      // Save as a knowledge row with type=session_summary
+      const r = await fetch('/api/admin/knowledge', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          module:    state.activeModule,
+          query_id:  state.activeQueryId,
+          plain:     summary,
+          type:      'session_summary',
+          topic_tags: [],
+          confidence: 1.0
+        })
+      });
+      if (!r.ok) throw new Error('save failed');
+      $('knowledge-saved-note').style.display = '';
+      toast('✓ Saved to Knowledge Layer', 'success');
+      await loadRecords(state.activeQueryId);
+    } catch { toast('Save failed', 'error'); }
+  });
+
+  // ── CRAWL TOP-UP ──
+  $('btn-run-crawl').addEventListener('click', async () => {
+    if (!state.activeModule || !state.activeQueryId || state.crawlRunning) return;
+    state.crawlRunning = true;
+    $('btn-run-crawl').disabled = true;
+    $('btn-run-crawl').textContent = '↺ Crawling…';
+
+    let pollTimer = setInterval(async () => {
+      try {
+        const r = await fetch('/api/admin/query-status?queryId=' + state.activeQueryId);
+        if (!r.ok) return;
+        const d = await r.json();
+        $('crawl-progress').textContent = d.found + '/' + d.target;
+        const q = state.queries.find(x => x.id === state.activeQueryId);
+        if (q) { q.findings_count = d.found; renderQueryList(); }
+      } catch {}
+    }, 3000);
+
+    let complete = false;
+    while (!complete) {
+      try {
+        const r = await fetch('/api/crawl', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ module: state.activeModule, queryId: state.activeQueryId })
+        });
+        const d = await r.json();
+        if (d.complete || !d.processed) { complete = true; }
+      } catch { break; }
+    }
+
+    clearInterval(pollTimer);
+    state.crawlRunning = false;
+    $('btn-run-crawl').disabled = false;
+    $('btn-run-crawl').textContent = '↺ Top up crawl';
+    await loadRecords(state.activeQueryId);
+    await loadQueries();
+    toast('Crawl complete', 'success');
+  });
+
+  // ── MEMORY ──
+  async function loadMemory() {
+    if (!state.activeModule) return;
+    try {
+      const r = await fetch('/api/admin/db-stats?module=' + enc(state.activeModule));
+      if (!r.ok) return;
+      const d = await r.json();
+      renderMemory(d);
+    } catch {}
+  }
+
+  function renderMemory(d) {
+    const toKB = mb => (parseFloat(mb) * 1024).toFixed(1);
+    $('memory-line').textContent = toKB(d.totalModuleMB) + '/' + toKB(d.totalAllMB) + ' KB';
+  }
+
+  // ── INIT ──
+  checkAuth();
+</script>
+</body>
+</html>
